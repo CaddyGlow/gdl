@@ -54,7 +54,7 @@ jobs:
             runs_on: ubuntu-latest
             archive: zip
             exe_suffix: ".exe"
-            use_cross: true
+            use_cross: false
           - target: x86_64-apple-darwin
             runs_on: macos-latest
             archive: tar.gz
@@ -78,16 +78,25 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Install cross-compilation linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install cross-compilation toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          mkdir -p .cargo
-          cat >> .cargo/config.toml << EOF
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            mkdir -p .cargo
+            cat >> .cargo/config.toml << EOF
           [target.aarch64-unknown-linux-gnu]
           linker = "aarch64-linux-gnu-gcc"
           EOF
+          elif [ "${{ matrix.target }}" = "x86_64-pc-windows-gnu" ]; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+            mkdir -p .cargo
+            cat >> .cargo/config.toml << EOF
+          [target.x86_64-pc-windows-gnu]
+          linker = "x86_64-w64-mingw32-gcc"
+          EOF
+          fi
 
       - name: Build release binary
         uses: actions-rs/cargo@v1
@@ -118,7 +127,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gdl-${{ matrix.target }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
 
   release:
     if: always() && startsWith(github.ref, 'refs/tags/') && !cancelled()
