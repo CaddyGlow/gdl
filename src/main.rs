@@ -10,10 +10,14 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde::Deserialize;
 
+const VERSION: &str = env!("GDL_VERSION");
+const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
+
 #[derive(Parser, Debug)]
 #[command(
     author,
-    version,
+    version = VERSION,
+    long_version = LONG_VERSION,
     about = "Download files or directories from a GitHub repository via the REST API."
 )]
 struct Cli {
@@ -142,7 +146,8 @@ fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     let owner = segments[0].to_string();
     let repo = segments[1].to_string();
     let branch = segments[3].to_string();
-    let path = segments[4..].join("/");
+    let raw_path = segments[4..].join("/");
+    let path = raw_path.trim_matches('/').to_string();
 
     Ok(RequestInfo {
         owner,
@@ -413,4 +418,114 @@ fn download_file(
     file.flush().context("failed to flush downloaded file")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn make_file(path: &str) -> GitHubContent {
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path)
+            .to_string();
+        GitHubContent {
+            name,
+            path: path.to_string(),
+            url: format!("https://api.example.com/repos/file/{}", path),
+            download_url: Some(format!(
+                "https://raw.example.com/repos/file/{}",
+                path
+            )),
+            content_type: ContentType::File,
+        }
+    }
+
+    fn make_dir(path: &str) -> GitHubContent {
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path)
+            .to_string();
+        GitHubContent {
+            name,
+            path: path.to_string(),
+            url: format!("https://api.example.com/repos/dir/{}", path),
+            download_url: None,
+            content_type: ContentType::Dir,
+        }
+    }
+
+    #[test]
+    fn parses_tree_url_with_trailing_slash() {
+        let info = parse_github_url(
+            "https://github.com/foo/bar/tree/main/path/to/dir/",
+        )
+        .unwrap();
+
+        assert_eq!(info.owner, "foo");
+        assert_eq!(info.repo, "bar");
+        assert_eq!(info.branch, "main");
+        assert_eq!(info.path, "path/to/dir");
+        assert!(info.has_trailing_slash);
+    }
+
+    #[test]
+    fn rejects_invalid_github_url() {
+        let err = parse_github_url("https://github.com/foo/bar").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("URL must include /tree/ or /blob/"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn determines_output_for_single_file() {
+        let request = RequestInfo {
+            owner: "foo".into(),
+            repo: "bar".into(),
+            branch: "main".into(),
+            path: "dir/file.txt".into(),
+            has_trailing_slash: false,
+        };
+        let contents = vec![make_file("dir/file.txt")];
+        let (_base, output) = determine_paths(&request, &contents);
+        assert_eq!(output, PathBuf::from("."));
+    }
+
+    #[test]
+    fn determine_output_for_directory_without_trailing_slash() {
+        let request = RequestInfo {
+            owner: "foo".into(),
+            repo: "bar".into(),
+            branch: "main".into(),
+            path: "dir/subdir".into(),
+            has_trailing_slash: false,
+        };
+        let contents = vec![make_dir("dir/subdir")];
+        let (_base, output) = determine_paths(&request, &contents);
+        assert_eq!(output, PathBuf::from("subdir"));
+    }
+
+    #[test]
+    fn relative_path_removes_base_prefix() {
+        let base = Path::new("dir/subdir");
+        let item = make_file("dir/subdir/file.txt");
+        let relative = relative_path(base, &item).unwrap();
+        assert_eq!(relative, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn relative_path_rejects_traversal() {
+        let base = Path::new("dir");
+        let item = make_file("dir/../evil.txt");
+        let err = relative_path(base, &item).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("refusing to write outside the output directory"));
+    }
 }

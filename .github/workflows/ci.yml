@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install components
+        run: rustup component add clippy rustfmt
+      - name: Check formatting
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-features
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-latest
+            archive: tar.gz
+            exe_suffix: ""
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-latest
+            archive: tar.gz
+            exe_suffix: ""
+            use_cross: true
+          - target: x86_64-pc-windows-gnu
+            runs_on: ubuntu-latest
+            archive: zip
+            exe_suffix: ".exe"
+            use_cross: true
+          - target: aarch64-apple-darwin
+            runs_on: macos-latest
+            archive: tar.gz
+            exe_suffix: ""
+            use_cross: false
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use_cross == true
+        run: cargo install cross --locked
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          BIN="gdl"
+          TARGET="${{ matrix.target }}"
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE_STEM="$BIN-$VERSION-$TARGET"
+          cp "target/$TARGET/release/$BIN${{ matrix.exe_suffix }}" "dist/$BIN${{ matrix.exe_suffix }}"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip "$ARCHIVE_STEM.zip" "$BIN${{ matrix.exe_suffix }}"
+          else
+            tar czf "$ARCHIVE_STEM.tar.gz" "$BIN${{ matrix.exe_suffix }}"
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdl-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            dist/gdl-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/gdl-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
