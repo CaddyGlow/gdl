@@ -439,8 +439,12 @@ fn save_update_state(path: &Path, state: &UpdateState) -> Result<()> {
     file.flush()
         .with_context(|| format!("failed to flush update state file {}", tmp_path.display()))?;
     if path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("failed to remove existing update state file {}", path.display()))?;
+        fs::remove_file(path).with_context(|| {
+            format!(
+                "failed to remove existing update state file {}",
+                path.display()
+            )
+        })?;
     }
     fs::rename(&tmp_path, path)
         .with_context(|| format!("failed to persist update state file {}", path.display()))?;
