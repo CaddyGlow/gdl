@@ -189,8 +189,7 @@ fn fetch_github_contents(
     let mut request_builder = client.get(api_url);
 
     if let Some(token) = token {
-        request_builder =
-            request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
+        request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
     let response = request_builder
@@ -215,17 +214,14 @@ fn fetch_github_contents(
     match items {
         Ok(list) => Ok(list),
         Err(_) => {
-            let single: GitHubContent = serde_json::from_slice(&body)
-                .context("unable to decode GitHub API response")?;
+            let single: GitHubContent =
+                serde_json::from_slice(&body).context("unable to decode GitHub API response")?;
             Ok(vec![single])
         }
     }
 }
 
-fn determine_paths(
-    request: &RequestInfo,
-    contents: &[GitHubContent],
-) -> (PathBuf, PathBuf) {
+fn determine_paths(request: &RequestInfo, contents: &[GitHubContent]) -> (PathBuf, PathBuf) {
     let is_single_file = contents.len() == 1 && contents[0].content_type == ContentType::File;
     if is_single_file {
         let file_path = Path::new(&contents[0].path);
@@ -247,7 +243,7 @@ fn determine_paths(
             PathBuf::from(".")
         } else {
             base.file_name()
-                .map(|name| PathBuf::from(name))
+                .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."))
         };
 
@@ -272,12 +268,8 @@ fn ensure_directory(dir: &Path) -> Result<()> {
             ));
         }
     } else {
-        fs::create_dir_all(dir).with_context(|| {
-            format!(
-                "failed to create output directory {}",
-                dir.display()
-            )
-        })?;
+        fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create output directory {}", dir.display()))?;
     }
     Ok(())
 }
@@ -298,29 +290,16 @@ fn process_contents(
                 let target_path = output_dir.join(&relative);
                 if let Some(parent) = target_path.parent() {
                     fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "failed to create directory {}",
-                            parent.display()
-                        )
+                        format!("failed to create directory {}", parent.display())
                     })?;
                 }
                 download_file(client, &item, token, &target_path)?;
             }
             ContentType::Dir => {
                 info!("Entering directory {}", item.path);
-                let sub_contents =
-                    fetch_github_contents(client, request, &item.path, token)
-                        .with_context(|| {
-                            format!("unable to fetch contents of {}", item.path)
-                        })?;
-                process_contents(
-                    client,
-                    request,
-                    output_dir,
-                    base_path,
-                    token,
-                    sub_contents,
-                )?;
+                let sub_contents = fetch_github_contents(client, request, &item.path, token)
+                    .with_context(|| format!("unable to fetch contents of {}", item.path))?;
+                process_contents(client, request, output_dir, base_path, token, sub_contents)?;
             }
             ContentType::Symlink | ContentType::Submodule | ContentType::Other => {
                 warn!(
@@ -385,8 +364,7 @@ fn download_file(
     };
 
     if let Some(token) = token {
-        request_builder =
-            request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
+        request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
     let mut response = request_builder
@@ -406,15 +384,10 @@ fn download_file(
         ));
     }
 
-    let mut file = File::create(target_path).with_context(|| {
-        format!("failed to create file {}", target_path.display())
-    })?;
-    io::copy(&mut response, &mut file).with_context(|| {
-        format!(
-            "failed to write content to {}",
-            target_path.display()
-        )
-    })?;
+    let mut file = File::create(target_path)
+        .with_context(|| format!("failed to create file {}", target_path.display()))?;
+    io::copy(&mut response, &mut file)
+        .with_context(|| format!("failed to write content to {}", target_path.display()))?;
     file.flush().context("failed to flush downloaded file")?;
 
     Ok(())
@@ -435,10 +408,7 @@ mod tests {
             name,
             path: path.to_string(),
             url: format!("https://api.example.com/repos/file/{}", path),
-            download_url: Some(format!(
-                "https://raw.example.com/repos/file/{}",
-                path
-            )),
+            download_url: Some(format!("https://raw.example.com/repos/file/{}", path)),
             content_type: ContentType::File,
         }
     }
@@ -460,10 +430,7 @@ mod tests {
 
     #[test]
     fn parses_tree_url_with_trailing_slash() {
-        let info = parse_github_url(
-            "https://github.com/foo/bar/tree/main/path/to/dir/",
-        )
-        .unwrap();
+        let info = parse_github_url("https://github.com/foo/bar/tree/main/path/to/dir/").unwrap();
 
         assert_eq!(info.owner, "foo");
         assert_eq!(info.repo, "bar");

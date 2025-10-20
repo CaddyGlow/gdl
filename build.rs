@@ -43,7 +43,7 @@ fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
         return None;
     }
 
-    let output = Command::new("git").args(&args).output().ok()?;
+    let output = Command::new("git").args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
