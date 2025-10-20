@@ -120,4 +120,4 @@ nix develop
 
 ## License
 
-A license has not yet been specified in this repository. Please reach out to the maintainers for guidance before redistribution.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
