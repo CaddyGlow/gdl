@@ -2,16 +2,26 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use log::{debug, info, warn};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
-use serde::Deserialize;
+use self_update::backends::github;
+use self_update::update::ReleaseUpdate;
+use self_update::version;
+use serde::{Deserialize, Serialize};
 
 const VERSION: &str = env!("GDL_VERSION");
 const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_OWNER: &str = "CaddyGlow";
+const GITHUB_REPO: &str = "gdl";
+const BIN_NAME: &str = "gdl";
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60;
+const POSTPONE_DURATION_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -22,8 +32,16 @@ const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
 )]
 struct Cli {
     /// GitHub folder URL to download files from (e.g. https://github.com/owner/repo/tree/branch/path)
+    #[arg(long, required_unless_present_any = ["self_update", "check_update"])]
+    url: Option<String>,
+
+    /// Update gdl to the latest release and exit
     #[arg(long)]
-    url: String,
+    self_update: bool,
+
+    /// Check for a newer gdl release and exit without installing it
+    #[arg(long)]
+    check_update: bool,
 
     /// Output directory to place the downloaded files (defaults depend on the request)
     #[arg(long)]
@@ -68,30 +86,49 @@ enum ContentType {
 fn main() -> Result<()> {
     init_logging();
 
-    let cli = Cli::parse();
+    let Cli {
+        url,
+        self_update,
+        check_update,
+        output,
+        token,
+    } = Cli::parse();
 
-    let token = cli
-        .token
+    let token = token
         .or_else(|| env::var("GITHUB_TOKEN").ok())
         .or_else(|| env::var("GH_TOKEN").ok());
 
+    if self_update {
+        run_self_update(token.as_deref())?;
+        return Ok(());
+    }
+
+    if check_update {
+        check_for_update(token.as_deref())?;
+        return Ok(());
+    }
+
+    let url = url.expect("clap enforces --url when no update flag is used");
+
+    auto_check_for_updates(token.as_deref())?;
+
     let client = Client::builder()
-        .user_agent("gdl-rs (https://github.com/rick/gdl)")
+        .user_agent("gdl-rs (https://github.com/CaddyGlow/gdl)")
         .build()
         .context("failed to construct HTTP client")?;
 
-    let request = parse_github_url(&cli.url)?;
+    let request = parse_github_url(&url)?;
     debug!("Parsed request info: {:?}", request);
 
     let contents = fetch_github_contents(&client, &request, &request.path, token.as_deref())
-        .with_context(|| format!("unable to fetch GitHub contents for {}", cli.url))?;
+        .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
 
     if contents.is_empty() {
         return Err(anyhow!("No contents returned for the requested path"));
     }
 
     let (base_path, default_output_dir) = determine_paths(&request, &contents);
-    let output_dir = cli.output.unwrap_or(default_output_dir);
+    let output_dir = output.unwrap_or(default_output_dir);
 
     ensure_directory(&output_dir)?;
 
@@ -126,6 +163,298 @@ fn init_logging() {
     let _ = env_logger::Builder::from_env(env)
         .format_timestamp_secs()
         .try_init();
+}
+
+fn run_self_update(token: Option<&str>) -> Result<()> {
+    if skip_self_update() {
+        info!("Skipping self-update because GDL_SKIP_SELF_UPDATE is set");
+        return Ok(());
+    }
+
+    let updater = build_updater(token)?;
+    let status = updater
+        .update()
+        .context("failed to download and install the latest gdl release")?;
+
+    if status.updated() {
+        info!("Updated gdl to version {}", status.version());
+    } else {
+        info!("gdl is already up to date (current: {})", status.version());
+    }
+
+    Ok(())
+}
+
+fn check_for_update(token: Option<&str>) -> Result<()> {
+    if skip_self_update() {
+        info!("Skipping update check because GDL_SKIP_SELF_UPDATE is set");
+        return Ok(());
+    }
+
+    let updater = build_updater(token)?;
+    let latest = updater
+        .get_latest_release()
+        .context("failed to fetch latest gdl release information")?;
+    let current_version = updater.current_version();
+
+    if version::bump_is_greater(&current_version, &latest.version)
+        .context("failed to compare semantic versions")?
+    {
+        info!(
+            "A newer gdl release is available: {} (current: {})",
+            latest.version, current_version
+        );
+    } else {
+        info!("gdl is already at the latest version ({})", current_version);
+    }
+
+    Ok(())
+}
+
+fn build_updater(token: Option<&str>) -> Result<Box<dyn ReleaseUpdate>> {
+    let install_path = current_bin_dir()?;
+    let mut builder = github::Update::configure();
+
+    builder
+        .repo_owner(GITHUB_OWNER)
+        .repo_name(GITHUB_REPO)
+        .bin_name(BIN_NAME)
+        .bin_install_path(&install_path)
+        .target(self_update::get_target())
+        .show_download_progress(true)
+        .no_confirm(true)
+        .current_version(PKG_VERSION);
+
+    if let Some(token) = token {
+        if !token.trim().is_empty() {
+            builder.auth_token(token.trim());
+        }
+    }
+
+    builder
+        .build()
+        .context("failed to configure self-update for gdl")
+}
+
+fn current_bin_dir() -> Result<PathBuf> {
+    let exe = env::current_exe().context("unable to locate current executable path")?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow!("unable to determine install directory for gdl"))?;
+    Ok(dir.to_path_buf())
+}
+
+fn skip_self_update() -> bool {
+    env::var("GDL_SKIP_SELF_UPDATE").is_ok()
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct UpdateState {
+    last_check: Option<u64>,
+    postpone_until: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateDecision {
+    UpdateNow,
+    Postpone,
+    Discard,
+}
+
+fn auto_check_for_updates(token: Option<&str>) -> Result<()> {
+    if skip_self_update() {
+        return Ok(());
+    }
+
+    let state_path = update_state_path()?;
+    let mut state = load_update_state(&state_path)?;
+    let now = SystemTime::now();
+
+    if let Some(postpone_until_secs) = state.postpone_until {
+        let postpone_until = system_time_from_secs(postpone_until_secs);
+        if postpone_until > now {
+            debug!(
+                "Skipping update check because it was postponed until {:?}",
+                postpone_until
+            );
+            return Ok(());
+        }
+        state.postpone_until = None;
+    }
+
+    if let Some(last_check_secs) = state.last_check {
+        let last_check = system_time_from_secs(last_check_secs);
+        let elapsed = match now.duration_since(last_check) {
+            Ok(duration) => duration,
+            Err(_) => Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS),
+        };
+
+        if elapsed < Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS) {
+            debug!(
+                "Skipping update check; last check was {:?} seconds ago",
+                elapsed.as_secs()
+            );
+            return Ok(());
+        }
+    }
+
+    let updater = build_updater(token)?;
+    let latest = updater
+        .get_latest_release()
+        .context("failed to fetch latest gdl release information")?;
+    let current_version = updater.current_version();
+    let now_secs = system_time_to_secs(now);
+
+    let is_newer = version::bump_is_greater(&current_version, &latest.version)
+        .context("failed to compare semantic versions")?;
+
+    if !is_newer {
+        state.last_check = Some(now_secs);
+        state.postpone_until = None;
+        save_update_state(&state_path, &state)?;
+        return Ok(());
+    }
+
+    if !atty::is(atty::Stream::Stdin) || !atty::is(atty::Stream::Stdout) {
+        info!(
+            "A newer gdl release is available: {} (current: {}), but cannot prompt in non-interactive mode",
+            latest.version, current_version
+        );
+        state.last_check = Some(now_secs);
+        state.postpone_until = None;
+        save_update_state(&state_path, &state)?;
+        return Ok(());
+    }
+
+    println!(
+        "A newer gdl release is available: {} (current: {}).",
+        latest.version, current_version
+    );
+
+    let decision = prompt_for_update()?;
+
+    match decision {
+        UpdateDecision::UpdateNow => {
+            state.last_check = Some(now_secs);
+            state.postpone_until = None;
+            save_update_state(&state_path, &state)?;
+            run_self_update(token)?;
+        }
+        UpdateDecision::Postpone => {
+            state.last_check = Some(now_secs);
+            state.postpone_until = Some(now_secs + POSTPONE_DURATION_SECS);
+            save_update_state(&state_path, &state)?;
+            info!("Postponed update check for 24 hours.");
+        }
+        UpdateDecision::Discard => {
+            state.last_check = Some(now_secs);
+            state.postpone_until = None;
+            save_update_state(&state_path, &state)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn prompt_for_update() -> Result<UpdateDecision> {
+    loop {
+        print!("Would you like to update now? [yes/postpone/discard]: ");
+        io::stdout().flush().context("failed to flush stdout")?;
+        let mut input = String::new();
+        let bytes = io::stdin()
+            .read_line(&mut input)
+            .context("failed to read user input")?;
+
+        if bytes == 0 {
+            info!("No input received; treating as discard.");
+            return Ok(UpdateDecision::Discard);
+        }
+
+        match input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(UpdateDecision::UpdateNow),
+            "p" | "postpone" => return Ok(UpdateDecision::Postpone),
+            "d" | "discard" | "n" | "no" => return Ok(UpdateDecision::Discard),
+            _ => {
+                println!("Please enter 'yes', 'postpone', or 'discard'.");
+            }
+        }
+    }
+}
+
+fn update_state_path() -> Result<PathBuf> {
+    let base = env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".cache"))
+        })
+        .ok_or_else(|| {
+            anyhow!("Unable to determine cache directory (set XDG_CACHE_HOME or HOME)")
+        })?;
+
+    let dir = base.join("gdl");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
+    Ok(dir.join("update_state.json"))
+}
+
+fn load_update_state(path: &Path) -> Result<UpdateState> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(UpdateState::default()),
+        Err(err) => {
+            return Err(anyhow!(
+                "failed to open update state file {}: {}",
+                path.display(),
+                err
+            ))
+        }
+    };
+
+    match serde_json::from_reader(file) {
+        Ok(state) => Ok(state),
+        Err(err) => {
+            warn!(
+                "Unable to parse update state file {}; resetting tracking: {}",
+                path.display(),
+                err
+            );
+            Ok(UpdateState::default())
+        }
+    }
+}
+
+fn save_update_state(path: &Path, state: &UpdateState) -> Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    let mut file = File::create(&tmp_path).with_context(|| {
+        format!(
+            "failed to create temporary update state file {}",
+            tmp_path.display()
+        )
+    })?;
+    serde_json::to_writer_pretty(&mut file, state)
+        .with_context(|| format!("failed to write update state to {}", tmp_path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush update state file {}", tmp_path.display()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to remove existing update state file {}", path.display()))?;
+    }
+    fs::rename(&tmp_path, path)
+        .with_context(|| format!("failed to persist update state file {}", path.display()))?;
+    Ok(())
+}
+
+fn system_time_to_secs(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn system_time_from_secs(secs: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(secs)
 }
 
 fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {

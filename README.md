@@ -11,14 +11,39 @@ CLI for downloading files or directories from a GitHub repository using the GitH
 
 ## Installation
 
+### Quick install (recommended)
+
+Download and install the latest release using the install script:
+
+**Linux/macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash
+```
+
+Or with options:
+```bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash -s -- --prefix ~/.local/bin
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.ps1 | iex
+```
+
+The install scripts download pre-built binaries from GitHub releases. Available options:
+- `--prefix DIR` – installation directory (default: `~/.local/bin` on Linux/macOS, `%USERPROFILE%\.local\bin` on Windows)
+- `--tag TAG` – install a specific release tag instead of the latest
+- `--token TOKEN` – GitHub token to avoid rate limits
+- `--force` – overwrite existing installation without prompting
+
 ### Install from Git
 ```bash
-cargo install --git https://github.com/rick/gdl gdl
+cargo install --git https://github.com/CaddyGlow/gdl gdl
 ```
 
 ### Build from a local checkout
 ```bash
-git clone https://github.com/rick/gdl.git
+git clone https://github.com/CaddyGlow/gdl.git
 cd gdl
 cargo install --path .
 ```
@@ -39,6 +64,8 @@ gdl --url https://github.com/owner/repo/tree/main/path/to/dir
 
 Optional flags:
 - `--output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories).
+- `--self-update` – replace the current `gdl` binary with the latest GitHub release and exit. Honors `--token`/`GITHUB_TOKEN`/`GH_TOKEN` for private repositories.
+- `--check-update` – report whether a newer release is available without downloading it.
 - `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
 
 ### Examples
@@ -51,6 +78,11 @@ gdl --url https://github.com/owner/repo/blob/main/path/file.yml
 Download an entire directory tree into `./examples`:
 ```bash
 gdl --url https://github.com/owner/repo/tree/main/examples --output ./examples
+```
+
+Check for updates without downloading anything:
+```bash
+gdl --check-update
 ```
 
 Download from a private repository using a token:

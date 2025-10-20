@@ -24,6 +24,8 @@ jobs:
           rustup default stable
           rustup component add rustfmt clippy
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -74,6 +76,10 @@ jobs:
           rustup update stable
           rustup default stable
           rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install cross-compilation toolchain
         if: matrix.apt_package
@@ -132,5 +138,8 @@ jobs:
         with:
           files: artifacts/**/*
           fail_on_unmatched_files: false
+          draft: false
+          prerelease: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
