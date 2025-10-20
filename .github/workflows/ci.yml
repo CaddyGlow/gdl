@@ -44,12 +44,12 @@ jobs:
             runs_on: ubuntu-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: true
+            use_cross: false
           - target: aarch64-unknown-linux-gnu
             runs_on: ubuntu-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: true
+            use_cross: false
           - target: x86_64-pc-windows-gnu
             runs_on: ubuntu-latest
             archive: zip
@@ -77,6 +77,17 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
+
+      - name: Install cross-compilation linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
 
       - name: Build release binary
         uses: actions-rs/cargo@v1
