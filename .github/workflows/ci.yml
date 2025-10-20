@@ -19,11 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-          components: rustfmt, clippy
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add rustfmt clippy
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -44,27 +43,26 @@ jobs:
             runs_on: ubuntu-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: false
           - target: aarch64-unknown-linux-gnu
             runs_on: ubuntu-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: false
+            apt_package: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
           - target: x86_64-pc-windows-gnu
             runs_on: ubuntu-latest
             archive: zip
             exe_suffix: ".exe"
-            use_cross: false
+            apt_package: gcc-mingw-w64-x86-64
+            linker: x86_64-w64-mingw32-gcc
           - target: x86_64-apple-darwin
             runs_on: macos-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: false
           - target: aarch64-apple-darwin
             runs_on: macos-latest
             archive: tar.gz
             exe_suffix: ""
-            use_cross: false
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
@@ -72,38 +70,24 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
 
       - name: Install cross-compilation toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-gnu'
+        if: matrix.apt_package
         run: |
           sudo apt-get update
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            mkdir -p .cargo
-            cat >> .cargo/config.toml << EOF
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
+          sudo apt-get install -y ${{ matrix.apt_package }}
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.${{ matrix.target }}]
+          linker = "${{ matrix.linker }}"
           EOF
-          elif [ "${{ matrix.target }}" = "x86_64-pc-windows-gnu" ]; then
-            sudo apt-get install -y gcc-mingw-w64-x86-64
-            mkdir -p .cargo
-            cat >> .cargo/config.toml << EOF
-          [target.x86_64-pc-windows-gnu]
-          linker = "x86_64-w64-mingw32-gcc"
-          EOF
-          fi
 
       - name: Build release binary
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.use_cross }}
-          command: build
-          args: --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
           
       - name: Package artifact
         run: |
