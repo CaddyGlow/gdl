@@ -65,6 +65,14 @@ jobs:
             runs_on: macos-latest
             archive: tar.gz
             exe_suffix: ""
+          - target: aarch64-linux-android
+            runs_on: ubuntu-latest
+            archive: tar.gz
+            exe_suffix: ""
+            android: true
+            ndk_version: "26.1.10909125"
+            android_api: "24"
+            android_triple: "aarch64-linux-android"
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +98,25 @@ jobs:
           cat >> .cargo/config.toml << EOF
           [target.${{ matrix.target }}]
           linker = "${{ matrix.linker }}"
+          EOF
+
+      - name: Install Android NDK
+        if: matrix.android
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            ndk;${{ matrix.ndk_version }}
+
+      - name: Configure Android linker
+        if: matrix.android
+        run: |
+          mkdir -p .cargo
+          NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_SDK_ROOT/ndk/${{ matrix.ndk_version }}}"
+          echo "Using Android NDK at $NDK_HOME"
+          cat >> .cargo/config.toml <<EOF
+          [target.${{ matrix.target }}]
+          ar = "${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          linker = "${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.android_triple }}${{ matrix.android_api }}-clang"
           EOF
 
       - name: Build release binary

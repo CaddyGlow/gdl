@@ -61,11 +61,99 @@
           };
         };
 
+        # Cross-compilation helper function
+        mkCrossPackage =
+          crossPkgs: targetName:
+          crossPkgs.rustPlatform.buildRustPackage {
+            pname = "${crateName}-${targetName}";
+            version = crateVersion;
+            src = lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoHash = lib.fakeSha256;
+
+            nativeBuildInputs = with crossPkgs; [ pkg-config ];
+            buildInputs = [ ];
+
+            meta = with lib; {
+              description = "Small helper to launch applications with custom rules (${targetName})";
+              license = licenses.mit;
+              maintainers = [ ];
+            };
+          };
+
+        # Android build helper function
+        mkAndroidPackage =
+          target: targetName:
+          pkgs.stdenv.mkDerivation {
+            pname = "${crateName}-android-${targetName}";
+            version = crateVersion;
+            src = lib.cleanSource ./.;
+
+            nativeBuildInputs =
+              with pkgs;
+              [
+                cargo
+                rustc
+                cargo-ndk
+                rustup
+                pkg-config
+              ]
+              ++ lib.optionals pkgs.stdenv.isLinux [
+                pkgs.androidenv.androidPkgs.ndk-bundle
+              ];
+
+            buildInputs = [ pkgs.openssl ];
+
+            buildPhase = ''
+              export CARGO_HOME=$(mktemp -d)
+              # Add Android target
+              rustup target add ${target} || true
+
+              # Build with cargo-ndk
+              cargo ndk --target ${target} --platform 21 -- build --release
+            '';
+
+            installPhase = ''
+              mkdir -p $out/bin
+              # Copy the binary (not a .so for CLI tools)
+              if [ -f target/${target}/release/${crateName} ]; then
+                cp target/${target}/release/${crateName} $out/bin/
+              fi
+            '';
+
+            meta = with lib; {
+              description = "Small helper to launch applications with custom rules (Android ${targetName})";
+              license = licenses.mit;
+              maintainers = [ ];
+              platforms = [
+                "x86_64-linux"
+                "aarch64-linux"
+              ];
+            };
+          };
+
       in
       {
         packages = {
           default = cratePackage;
           with-icon-picker = cratePackageWithIconPicker;
+
+          # Cross-platform builds
+          # Windows
+          windows-x86_64 = mkCrossPackage pkgs.pkgsCross.mingwW64 "windows-x86_64";
+
+          # macOS
+          macos-aarch64 = mkCrossPackage pkgs.pkgsCross.aarch64-darwin "macos-aarch64";
+          macos-x86_64 = mkCrossPackage pkgs.pkgsCross.x86_64-darwin "macos-x86_64";
+
+          # Linux
+          linux-x86_64 = mkCrossPackage pkgs.pkgsCross.gnu64 "linux-x86_64";
+          linux-aarch64 = mkCrossPackage pkgs.pkgsCross.aarch64-multiplatform "linux-aarch64";
+
+          # Android builds for common architectures
+          android-aarch64 = mkAndroidPackage "aarch64-linux-android" "aarch64";
+          android-armv7 = mkAndroidPackage "armv7-linux-androideabi" "armv7";
+          android-x86_64 = mkAndroidPackage "x86_64-linux-android" "x86_64";
         };
 
         apps.default = {
@@ -84,6 +172,8 @@
             cargo-deny
             cargo-audit
             cargo-tarpaulin
+            cargo-ndk
+            rustup
           ];
 
           # Include GTK4 in dev shell for icon-picker development
