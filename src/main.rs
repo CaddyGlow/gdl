@@ -3,11 +3,12 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use log::{debug, info, warn};
 use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, RETRY_AFTER};
@@ -16,8 +17,10 @@ use self_update::backends::github;
 use self_update::update::ReleaseUpdate;
 use self_update::version;
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use tokio::task::spawn_blocking;
 use tokio::time::sleep;
 
 const VERSION: &str = env!("GDL_VERSION");
@@ -29,12 +32,22 @@ const BIN_NAME: &str = "gdl";
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60;
 const POSTPONE_DURATION_SECS: u64 = 24 * 60 * 60;
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum DownloadStrategy {
+    /// Use the GitHub REST API for downloads.
+    Api,
+    /// Use git sparse checkout to retrieve content.
+    Git,
+    /// Try the REST API first, then fall back to git if needed.
+    Auto,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     author,
     version = VERSION,
     long_version = LONG_VERSION,
-    about = "Download files or directories from a GitHub repository via the REST API."
+    about = "Download files or directories from a GitHub repository using the REST API or git."
 )]
 struct Cli {
     /// GitHub folder URLs to download from (e.g. https://github.com/owner/repo/tree/branch/path)
@@ -68,15 +81,26 @@ struct Cli {
     /// Maximum number of files to download concurrently
     #[arg(long, value_name = "N", default_value_t = 4)]
     parallel: usize,
+
+    /// Preferred download strategy (`api`, `git`, or `auto`)
+    #[arg(long, value_enum, default_value_t = DownloadStrategy::Auto)]
+    strategy: DownloadStrategy,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestKind {
+    Tree,
+    Blob,
+}
+
+#[derive(Debug, Clone)]
 struct RequestInfo {
     owner: String,
     repo: String,
     branch: String,
     path: String,
     has_trailing_slash: bool,
+    kind: RequestKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,6 +408,7 @@ fn main() -> Result<()> {
         token,
         verbose: _,
         parallel,
+        strategy,
     } = cli;
 
     let token = token
@@ -429,6 +454,7 @@ fn main() -> Result<()> {
                 token_ref,
                 parallel,
                 Arc::clone(&rate_limit),
+                strategy,
             )
             .await?;
         }
@@ -446,10 +472,72 @@ async fn download_github_path(
     token: Option<&str>,
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
+    strategy: DownloadStrategy,
 ) -> Result<()> {
     let request = parse_github_url(url)?;
     debug!("Parsed request info: {:?}", request);
 
+    match strategy {
+        DownloadStrategy::Api => {
+            download_via_rest(
+                client,
+                &request,
+                url,
+                output,
+                token,
+                parallel,
+                Arc::clone(&rate_limit),
+            )
+            .await
+        }
+        DownloadStrategy::Git => {
+            ensure_git_available()?;
+            download_via_git(&request, url, output, token).await
+        }
+        DownloadStrategy::Auto => {
+            match download_via_rest(
+                client,
+                &request,
+                url,
+                output,
+                token,
+                parallel,
+                Arc::clone(&rate_limit),
+            )
+            .await
+            {
+                Ok(()) => Ok(()),
+                Err(api_err) => {
+                    if git_available() {
+                        warn!(
+                            "REST download failed ({}); attempting git sparse checkout...",
+                            api_err
+                        );
+                        match download_via_git(&request, url, output, token).await {
+                            Ok(()) => Ok(()),
+                            Err(git_err) => {
+                                Err(api_err
+                                    .context(format!("git fallback also failed: {}", git_err)))
+                            }
+                        }
+                    } else {
+                        Err(api_err)
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn download_via_rest(
+    client: &Client,
+    request: &RequestInfo,
+    url: &str,
+    output: Option<&PathBuf>,
+    token: Option<&str>,
+    parallel: usize,
+    rate_limit: Arc<RateLimitTracker>,
+) -> Result<()> {
     let contents = fetch_github_contents(
         client,
         &request,
@@ -545,6 +633,405 @@ async fn download_github_path(
     );
 
     Ok(())
+}
+
+async fn download_via_git(
+    request: &RequestInfo,
+    url: &str,
+    output: Option<&PathBuf>,
+    token: Option<&str>,
+) -> Result<()> {
+    let request = request.clone();
+    let url = url.to_string();
+    let output = output.cloned();
+    let token = token.map(|t| t.to_string());
+
+    spawn_blocking(move || download_via_git_blocking(request, url, output, token))
+        .await
+        .map_err(|err| anyhow!("git download task failed: {}", err))??;
+    Ok(())
+}
+
+fn download_via_git_blocking(
+    request: RequestInfo,
+    url: String,
+    output: Option<PathBuf>,
+    token: Option<String>,
+) -> Result<()> {
+    ensure_git_available()?;
+
+    let mut repo_url = url::Url::parse(&format!(
+        "https://github.com/{}/{}.git",
+        request.owner, request.repo
+    ))
+    .with_context(|| {
+        format!(
+            "failed to construct repository URL for {}/{}",
+            request.owner, request.repo
+        )
+    })?;
+
+    if let Some(token) = token.as_deref() {
+        repo_url
+            .set_username(token.trim())
+            .map_err(|_| anyhow!("failed to encode token for git authentication"))?;
+        repo_url
+            .set_password(Some(""))
+            .map_err(|_| anyhow!("failed to set git authentication password"))?;
+    }
+
+    let repo_url_string = repo_url.to_string();
+    let repo_url_display = format!("https://github.com/{}/{}.git", request.owner, request.repo);
+
+    let temp_dir =
+        TempDir::new().context("failed to create temporary directory for git checkout")?;
+    let repo_dir = temp_dir.path().join("repo");
+    let repo_dir_str = repo_dir
+        .to_str()
+        .ok_or_else(|| anyhow!("temporary directory path contains invalid UTF-8"))?;
+
+    let clone_args = vec![
+        "clone",
+        "--filter=blob:none",
+        "--depth=1",
+        "--branch",
+        request.branch.as_str(),
+        "--single-branch",
+        "--no-checkout",
+        repo_url_string.as_str(),
+        repo_dir_str,
+    ];
+
+    run_git_command(&clone_args, None, &[7])
+        .with_context(|| format!("failed to clone {}", repo_url_display))?;
+
+    if request.kind == RequestKind::Blob {
+        run_git_command(
+            &["sparse-checkout", "init", "--no-cone"],
+            Some(&repo_dir),
+            &[],
+        )
+        .context("failed to initialize sparse checkout (no-cone)")?;
+    } else {
+        run_git_command(&["sparse-checkout", "init", "--cone"], Some(&repo_dir), &[])
+            .context("failed to initialize sparse checkout (cone)")?;
+    }
+
+    let sparse_target = if request.path.is_empty() {
+        "."
+    } else {
+        request.path.as_str()
+    };
+
+    run_git_command(
+        &["sparse-checkout", "set", sparse_target],
+        Some(&repo_dir),
+        &[],
+    )
+    .with_context(|| format!("failed to configure sparse checkout for {}", sparse_target))?;
+
+    run_git_command(
+        &["checkout", "--progress", request.branch.as_str()],
+        Some(&repo_dir),
+        &[],
+    )
+    .with_context(|| format!("failed to checkout branch {}", request.branch))?;
+
+    let treat_as_single_file = request.kind == RequestKind::Blob;
+    let (base_path, default_output_dir) =
+        compute_base_and_default_output(&request, treat_as_single_file, None);
+    let output_dir = output.unwrap_or(default_output_dir);
+    ensure_directory(&output_dir)?;
+
+    let tasks = build_git_copy_tasks(&request, &repo_dir, &output_dir, &base_path)?;
+    if tasks.is_empty() {
+        return Err(anyhow!(
+            "No files matched the requested path {} using git",
+            if request.path.is_empty() {
+                "/".to_string()
+            } else {
+                request.path.clone()
+            }
+        ));
+    }
+
+    let total_files = tasks.len();
+    let total_bytes: u64 = tasks.iter().filter_map(|task| task.size).sum();
+    let mut progress = DownloadProgress::new(total_files, total_bytes);
+
+    let target_display = if total_files == 1 && treat_as_single_file {
+        format_path_for_log(&tasks[0].target_path)
+    } else {
+        format_path_for_log(&output_dir)
+    };
+
+    info!(
+        "Downloading from {}/{}:{}:{} into {} (git sparse checkout)",
+        request.owner,
+        request.repo,
+        request.branch,
+        if request.path.is_empty() {
+            "/"
+        } else {
+            &request.path
+        },
+        target_display
+    );
+
+    for task in tasks {
+        if let Some(parent) = task.target_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create output directory {}", parent.display())
+            })?;
+        }
+        progress.log_start(&task.item_path, &task.target_path, task.size);
+        fs::copy(&task.source_path, &task.target_path).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                task.source_path.display(),
+                task.target_path.display()
+            )
+        })?;
+        progress.record_download(&task.item_path, &task.target_path, task.size);
+    }
+
+    info!(
+        "Finished downloading {} file(s) ({} total) from {} using git.",
+        progress.downloaded_files,
+        format_bytes(progress.downloaded_bytes),
+        url
+    );
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FileCopyTask {
+    item_path: String,
+    source_path: PathBuf,
+    target_path: PathBuf,
+    size: Option<u64>,
+}
+
+fn build_git_copy_tasks(
+    request: &RequestInfo,
+    repo_dir: &Path,
+    output_dir: &Path,
+    base_path: &Path,
+) -> Result<Vec<FileCopyTask>> {
+    if request.kind == RequestKind::Blob {
+        return build_git_file_task(request, repo_dir, output_dir, base_path)
+            .map(|task| vec![task]);
+    }
+
+    let source_root = if request.path.is_empty() {
+        repo_dir.to_path_buf()
+    } else {
+        repo_dir.join(&request.path)
+    };
+
+    if !source_root.exists() {
+        return Err(anyhow!(
+            "Path {} not found in cloned repository",
+            if request.path.is_empty() {
+                "/".to_string()
+            } else {
+                request.path.clone()
+            }
+        ));
+    }
+
+    let mut stack = vec![source_root];
+    let mut tasks = Vec::new();
+
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(&current)
+            .with_context(|| format!("failed to read directory {}", current.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("failed to read directory entry in {}", current.display())
+            })?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("failed to inspect entry {}", path.display()))?;
+
+            let relative = path.strip_prefix(repo_dir).with_context(|| {
+                format!("failed to derive relative path for {}", path.display())
+            })?;
+
+            if relative.starts_with(".git") {
+                continue;
+            }
+
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if metadata.file_type().is_symlink() {
+                warn!(
+                    "Skipping symlink {} encountered during git sparse checkout.",
+                    path.display()
+                );
+                continue;
+            }
+
+            if !metadata.is_file() {
+                continue;
+            }
+
+            let repo_relative = relative.to_string_lossy().replace('\\', "/");
+            let name = entry
+                .file_name()
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| repo_relative.clone());
+            let content = GitHubContent {
+                name,
+                path: repo_relative.clone(),
+                url: String::new(),
+                size: Some(metadata.len()),
+                download_url: None,
+                content_type: ContentType::File,
+            };
+            let relative_target = relative_path(base_path, &content)?;
+            let target_path = output_dir.join(&relative_target);
+            tasks.push(FileCopyTask {
+                item_path: content.path,
+                source_path: path,
+                target_path,
+                size: Some(metadata.len()),
+            });
+        }
+    }
+
+    Ok(tasks)
+}
+
+fn build_git_file_task(
+    request: &RequestInfo,
+    repo_dir: &Path,
+    output_dir: &Path,
+    base_path: &Path,
+) -> Result<FileCopyTask> {
+    if request.path.is_empty() {
+        return Err(anyhow!("File download requested but no path provided"));
+    }
+
+    let source_path = repo_dir.join(&request.path);
+    let metadata = fs::metadata(&source_path).with_context(|| {
+        format!(
+            "requested file {} is not available in sparse checkout",
+            source_path.display()
+        )
+    })?;
+
+    if !metadata.is_file() {
+        return Err(anyhow!("requested path {} is not a file", request.path));
+    }
+
+    let repo_relative = Path::new(&request.path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let name = Path::new(&request.path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&repo_relative)
+        .to_string();
+    let content = GitHubContent {
+        name,
+        path: repo_relative.clone(),
+        url: String::new(),
+        size: Some(metadata.len()),
+        download_url: None,
+        content_type: ContentType::File,
+    };
+    let relative_target = relative_path(base_path, &content)?;
+    let target_path = output_dir.join(&relative_target);
+
+    Ok(FileCopyTask {
+        item_path: content.path,
+        source_path,
+        target_path,
+        size: Some(metadata.len()),
+    })
+}
+
+fn run_git_command(
+    args: &[&str],
+    workdir: Option<&Path>,
+    redacted_indices: &[usize],
+) -> Result<()> {
+    let mut cmd = StdCommand::new("git");
+    cmd.args(args);
+    if let Some(dir) = workdir {
+        cmd.current_dir(dir);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+
+    let command_display = format_git_command(args, redacted_indices);
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to execute git {}", command_display))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            String::new()
+        };
+        let detail = if message.is_empty() {
+            "no additional output".to_string()
+        } else {
+            message
+        };
+        return Err(anyhow!(
+            "git {} exited with status {}: {}",
+            command_display,
+            output.status,
+            detail
+        ));
+    }
+
+    Ok(())
+}
+
+fn format_git_command(args: &[&str], redacted_indices: &[usize]) -> String {
+    args.iter()
+        .enumerate()
+        .map(|(idx, arg)| {
+            if redacted_indices.contains(&idx) {
+                "<redacted>"
+            } else {
+                arg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn git_available() -> bool {
+    StdCommand::new("git")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn ensure_git_available() -> Result<()> {
+    if git_available() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "git executable not found in PATH; install git or choose `--strategy api`"
+        ))
+    }
 }
 
 fn format_path_for_log(path: &Path) -> String {
@@ -1085,11 +1572,21 @@ fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
         ));
     }
 
+    let mut kind = if segments[2] == "tree" {
+        RequestKind::Tree
+    } else {
+        RequestKind::Blob
+    };
+
     let owner = segments[0].to_string();
     let repo = segments[1].to_string();
     let branch = segments[3].to_string();
     let raw_path = segments[4..].join("/");
     let path = raw_path.trim_matches('/').to_string();
+
+    if path.is_empty() && kind == RequestKind::Blob {
+        kind = RequestKind::Tree;
+    }
 
     Ok(RequestInfo {
         owner,
@@ -1097,6 +1594,7 @@ fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
         branch,
         path,
         has_trailing_slash,
+        kind,
     })
 }
 
@@ -1167,10 +1665,14 @@ async fn fetch_github_contents(
     }
 }
 
-fn determine_paths(request: &RequestInfo, contents: &[GitHubContent]) -> (PathBuf, PathBuf) {
-    let is_single_file = contents.len() == 1 && contents[0].content_type == ContentType::File;
-    if is_single_file {
-        let file_path = Path::new(&contents[0].path);
+fn compute_base_and_default_output(
+    request: &RequestInfo,
+    treat_as_single_file: bool,
+    file_path_override: Option<&str>,
+) -> (PathBuf, PathBuf) {
+    if treat_as_single_file {
+        let path_str = file_path_override.unwrap_or(&request.path);
+        let file_path = Path::new(path_str);
         let base = file_path
             .parent()
             .map(Path::to_path_buf)
@@ -1195,6 +1697,15 @@ fn determine_paths(request: &RequestInfo, contents: &[GitHubContent]) -> (PathBu
 
         (normalize_base(base), default_output)
     }
+}
+
+fn determine_paths(request: &RequestInfo, contents: &[GitHubContent]) -> (PathBuf, PathBuf) {
+    let is_single_file = contents.len() == 1 && contents[0].content_type == ContentType::File;
+    compute_base_and_default_output(
+        request,
+        is_single_file,
+        contents.first().map(|item| item.path.as_str()),
+    )
 }
 
 fn normalize_base(base: PathBuf) -> PathBuf {
@@ -1512,6 +2023,19 @@ mod tests {
         assert_eq!(info.branch, "main");
         assert_eq!(info.path, "path/to/dir");
         assert!(info.has_trailing_slash);
+        assert_eq!(info.kind, RequestKind::Tree);
+    }
+
+    #[test]
+    fn blob_url_without_path_defaults_to_tree_root() {
+        let info = parse_github_url("https://github.com/foo/bar/blob/main/").unwrap();
+
+        assert_eq!(info.owner, "foo");
+        assert_eq!(info.repo, "bar");
+        assert_eq!(info.branch, "main");
+        assert_eq!(info.path, "");
+        assert!(info.has_trailing_slash);
+        assert_eq!(info.kind, RequestKind::Tree);
     }
 
     #[test]
@@ -1533,6 +2057,7 @@ mod tests {
             branch: "main".into(),
             path: "dir/file.txt".into(),
             has_trailing_slash: false,
+            kind: RequestKind::Blob,
         };
         let contents = vec![make_file("dir/file.txt")];
         let (_base, output) = determine_paths(&request, &contents);
@@ -1547,6 +2072,7 @@ mod tests {
             branch: "main".into(),
             path: "dir/subdir".into(),
             has_trailing_slash: false,
+            kind: RequestKind::Tree,
         };
         let contents = vec![make_dir("dir/subdir")];
         let (_base, output) = determine_paths(&request, &contents);
