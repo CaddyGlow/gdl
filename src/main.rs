@@ -9,15 +9,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser};
 use futures::stream::{self, StreamExt, TryStreamExt};
-use log::{debug, info, trace, warn};
-use reqwest::header::{ACCEPT, AUTHORIZATION};
-use reqwest::Client;
+use log::{debug, info, warn};
+use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, RETRY_AFTER};
+use reqwest::{Client, StatusCode};
 use self_update::backends::github;
 use self_update::update::ReleaseUpdate;
 use self_update::version;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 const VERSION: &str = env!("GDL_VERSION");
 const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
@@ -124,6 +125,253 @@ enum ContentType {
     Other,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RateLimitSnapshot {
+    limit: Option<u64>,
+    remaining: Option<u64>,
+    used: Option<u64>,
+    reset_epoch: Option<u64>,
+}
+
+impl RateLimitSnapshot {
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let limit = header_value_to_u64(headers, "x-ratelimit-limit");
+        let remaining = header_value_to_u64(headers, "x-ratelimit-remaining");
+        let used = header_value_to_u64(headers, "x-ratelimit-used");
+        let reset_epoch = header_value_to_u64(headers, "x-ratelimit-reset");
+
+        if limit.is_none() && remaining.is_none() && used.is_none() && reset_epoch.is_none() {
+            return None;
+        }
+
+        Some(Self {
+            limit,
+            remaining,
+            used,
+            reset_epoch,
+        })
+    }
+
+    fn reset_eta_display(&self) -> String {
+        self.reset_epoch
+            .and_then(|epoch| {
+                let reset_time = UNIX_EPOCH + Duration::from_secs(epoch);
+                reset_time.duration_since(SystemTime::now()).ok()
+            })
+            .map(|duration| format!("in {}s", duration.as_secs()))
+            .unwrap_or_else(|| "at an unknown time".to_string())
+    }
+}
+
+#[derive(Debug, Default)]
+struct RateLimitState {
+    last_snapshot: Option<RateLimitSnapshot>,
+    lowest_remaining: Option<u64>,
+    last_warned_remaining: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct RateLimitTracker {
+    state: Mutex<RateLimitState>,
+}
+
+impl RateLimitTracker {
+    async fn record_headers(&self, headers: &HeaderMap) -> Option<(RateLimitSnapshot, bool, bool)> {
+        let snapshot = RateLimitSnapshot::from_headers(headers)?;
+        let mut state = self.state.lock().await;
+
+        let log_change = state
+            .last_snapshot
+            .as_ref()
+            .map(|previous| previous != &snapshot)
+            .unwrap_or(true);
+        state.last_snapshot = Some(snapshot.clone());
+
+        if let Some(remaining) = snapshot.remaining {
+            state.lowest_remaining = Some(
+                state
+                    .lowest_remaining
+                    .map_or(remaining, |lowest| lowest.min(remaining)),
+            );
+        }
+
+        let warn_low = if let (Some(limit), Some(remaining)) = (snapshot.limit, snapshot.remaining)
+        {
+            let threshold = ((limit as f64) * 0.1).ceil() as u64;
+            let threshold = threshold.max(50).min(limit);
+            if remaining <= threshold {
+                let should_warn = state
+                    .last_warned_remaining
+                    .map_or(true, |previous| remaining < previous);
+                if should_warn {
+                    state.last_warned_remaining = Some(remaining);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        drop(state);
+
+        Some((snapshot, log_change, warn_low))
+    }
+
+    fn backoff_duration(status: StatusCode, headers: &HeaderMap) -> Option<Duration> {
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            if let Some(duration) = parse_retry_after(headers) {
+                return Some(duration);
+            }
+        }
+
+        if status == StatusCode::FORBIDDEN {
+            let remaining = header_value_to_u64(headers, "x-ratelimit-remaining");
+            if let Some(remaining) = remaining {
+                if remaining > 0 {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        } else if status != StatusCode::TOO_MANY_REQUESTS {
+            return None;
+        }
+
+        if let Some(duration) = parse_retry_after(headers) {
+            return Some(duration);
+        }
+
+        if let Some(reset_epoch) = header_value_to_u64(headers, "x-ratelimit-reset") {
+            let reset_time = UNIX_EPOCH + Duration::from_secs(reset_epoch);
+            if let Ok(duration) = reset_time.duration_since(SystemTime::now()) {
+                if duration > Duration::from_secs(0) {
+                    return Some(duration + Duration::from_secs(1));
+                }
+            }
+        }
+
+        None
+    }
+}
+
+fn header_value_to_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|str_value| str_value.parse::<u64>().ok())
+}
+
+fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    value.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+async fn send_github_request(
+    builder: &reqwest::RequestBuilder,
+    rate_limit: &Arc<RateLimitTracker>,
+    context: &str,
+) -> Result<reqwest::Response> {
+    const MAX_ATTEMPTS: usize = 5;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let request = builder
+            .try_clone()
+            .ok_or_else(|| anyhow!("failed to clone GitHub request for {}", context))?;
+
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("GitHub request failed for {}", context))?;
+
+        if let Some((snapshot, log_change, warn_low)) =
+            rate_limit.record_headers(response.headers()).await
+        {
+            if log_change {
+                debug!(
+                    "GitHub rate limit: {} remaining of {} (used: {}) - resets {}",
+                    snapshot
+                        .remaining
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    snapshot
+                        .limit
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    snapshot
+                        .used
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    snapshot.reset_eta_display()
+                );
+            }
+
+            if warn_low {
+                warn!(
+                    "GitHub rate limit low: {} remaining of {} (resets {}).",
+                    snapshot
+                        .remaining
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    snapshot
+                        .limit
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    snapshot.reset_eta_display()
+                );
+            }
+        }
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        if let Some(wait) = RateLimitTracker::backoff_duration(status, response.headers()) {
+            if attempt == MAX_ATTEMPTS {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "<unable to read response body>".into());
+                return Err(anyhow!(
+                    "GitHub request {} exceeded rate limit after {} attempts (status {}): {}",
+                    context,
+                    attempt,
+                    status,
+                    body
+                ));
+            }
+
+            let wait_secs = wait.as_secs().max(1);
+            warn!(
+                "GitHub request {} hit a rate limit (status {}), retrying after {}s...",
+                context, status, wait_secs
+            );
+            sleep(wait).await;
+            continue;
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unable to read response body>".into());
+        return Err(anyhow!(
+            "GitHub request {} failed with status {}: {}",
+            context,
+            status,
+            body
+        ));
+    }
+
+    Err(anyhow!(
+        "GitHub request {} failed after exhausting retries",
+        context
+    ))
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
@@ -158,6 +406,7 @@ fn main() -> Result<()> {
         .user_agent("gdl-rs (https://github.com/CaddyGlow/gdl)")
         .build()
         .context("failed to construct HTTP client")?;
+    let rate_limit = Arc::new(RateLimitTracker::default());
 
     let parallel = parallel.max(1);
 
@@ -166,11 +415,22 @@ fn main() -> Result<()> {
         .build()
         .context("failed to build async runtime")?;
 
+    let rate_limit_for_runtime = Arc::clone(&rate_limit);
+
     runtime.block_on(async move {
         let output_ref = output.as_ref();
         let token_ref = token.as_deref();
+        let rate_limit = rate_limit_for_runtime;
         for url in urls {
-            download_github_path(&client, &url, output_ref, token_ref, parallel).await?;
+            download_github_path(
+                &client,
+                &url,
+                output_ref,
+                token_ref,
+                parallel,
+                Arc::clone(&rate_limit),
+            )
+            .await?;
         }
         Ok::<(), anyhow::Error>(())
     })?;
@@ -185,13 +445,20 @@ async fn download_github_path(
     output: Option<&PathBuf>,
     token: Option<&str>,
     parallel: usize,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<()> {
     let request = parse_github_url(url)?;
     debug!("Parsed request info: {:?}", request);
 
-    let contents = fetch_github_contents(client, &request, &request.path, token)
-        .await
-        .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
+    let contents = fetch_github_contents(
+        client,
+        &request,
+        &request.path,
+        token,
+        Arc::clone(&rate_limit),
+    )
+    .await
+    .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
 
     if contents.is_empty() {
         return Err(anyhow!("No contents returned for the requested path"));
@@ -201,21 +468,22 @@ async fn download_github_path(
     let output_dir = output.cloned().unwrap_or(default_output_dir);
 
     let target_display = describe_download_target(&output_dir, &base_path, &contents)?;
-    let file_inventory = build_file_inventory(client, &request, token, &contents)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to enumerate files for {}/{}:{}:{}",
-                request.owner,
-                request.repo,
-                request.branch,
-                if request.path.is_empty() {
-                    "/".to_string()
-                } else {
-                    request.path.clone()
-                }
-            )
-        })?;
+    let file_inventory =
+        build_file_inventory(client, &request, token, &contents, Arc::clone(&rate_limit))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to enumerate files for {}/{}:{}:{}",
+                    request.owner,
+                    request.repo,
+                    request.branch,
+                    if request.path.is_empty() {
+                        "/".to_string()
+                    } else {
+                        request.path.clone()
+                    }
+                )
+            })?;
     ensure_directory(&output_dir)?;
 
     info!(
@@ -242,6 +510,7 @@ async fn download_github_path(
         contents,
         &file_inventory,
         parallel,
+        Arc::clone(&rate_limit),
     )
     .await?;
 
@@ -259,6 +528,7 @@ async fn download_github_path(
         download_tasks,
         Arc::clone(&progress),
         parallel,
+        Arc::clone(&rate_limit),
     )
     .await?;
 
@@ -307,6 +577,7 @@ async fn build_file_inventory(
     request: &RequestInfo,
     token: Option<&str>,
     contents: &[GitHubContent],
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<HashMap<String, FileMetadata>> {
     if contents.len() == 1 && contents[0].content_type == ContentType::File {
         let mut map = HashMap::new();
@@ -319,7 +590,7 @@ async fn build_file_inventory(
         return Ok(map);
     }
 
-    let tree = fetch_git_tree(client, request, token).await?;
+    let tree = fetch_git_tree(client, request, token, Arc::clone(&rate_limit)).await?;
     if tree.truncated {
         warn!(
             "GitHub tree listing for {}/{} may be incomplete (truncated).",
@@ -357,6 +628,7 @@ async fn fetch_git_tree(
     client: &Client,
     request: &RequestInfo,
     token: Option<&str>,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<GitTreeResponse> {
     let tree_spec = if request.path.is_empty() {
         request.branch.clone()
@@ -383,25 +655,18 @@ async fn fetch_git_tree(
         request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
-    let response = request_builder
-        .send()
+    let context = format!(
+        "enumerating git tree for {}/{} ({})",
+        request.owner, request.repo, tree_spec
+    );
+    let response = send_github_request(&request_builder, &rate_limit, &context)
         .await
         .context("GitHub git tree request failed")?;
 
-    let status = response.status();
     let body = response
         .bytes()
         .await
         .context("failed to read GitHub git tree response")?;
-
-    if !status.is_success() {
-        let message = String::from_utf8_lossy(&body);
-        return Err(anyhow!(
-            "GitHub git tree API responded with status {}: {}",
-            status,
-            message
-        ));
-    }
 
     let tree: GitTreeResponse =
         serde_json::from_slice(&body).context("failed to decode GitHub tree response")?;
@@ -840,6 +1105,7 @@ async fn fetch_github_contents(
     request: &RequestInfo,
     folder_path: &str,
     token: Option<&str>,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<Vec<GitHubContent>> {
     let mut api_url = url::Url::parse(&format!(
         "https://api.github.com/repos/{}/{}/contents",
@@ -869,25 +1135,26 @@ async fn fetch_github_contents(
         request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
-    let response = request_builder
-        .send()
+    let context = format!(
+        "listing contents for {}/{}:{}:{}",
+        request.owner,
+        request.repo,
+        request.branch,
+        if folder_path.is_empty() {
+            "/"
+        } else {
+            folder_path
+        }
+    );
+
+    let response = send_github_request(&request_builder, &rate_limit, &context)
         .await
         .context("GitHub API request failed")?;
 
-    let status = response.status();
     let body = response
         .bytes()
         .await
         .context("failed to read GitHub API response")?;
-
-    if !status.is_success() {
-        let message = String::from_utf8_lossy(&body);
-        return Err(anyhow!(
-            "GitHub API responded with status {}: {}",
-            status,
-            message
-        ));
-    }
 
     let items: Result<Vec<GitHubContent>, _> = serde_json::from_slice(&body);
     match items {
@@ -969,6 +1236,7 @@ async fn collect_download_tasks(
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<Vec<DownloadTask>> {
     collect_download_tasks_inner(
         client,
@@ -979,6 +1247,7 @@ async fn collect_download_tasks(
         contents,
         files,
         listing_parallel.max(1),
+        rate_limit,
     )
     .await
 }
@@ -992,6 +1261,7 @@ async fn collect_download_tasks_inner(
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<Vec<DownloadTask>> {
     let mut tasks = Vec::new();
     let mut directories = Vec::new();
@@ -1027,11 +1297,18 @@ async fn collect_download_tasks_inner(
     let sub_results = stream::iter(directories.into_iter().map(|dir_entry| {
         let http_client = client.clone();
         let dir_path = dir_entry.path.clone();
+        let rate_limit = Arc::clone(&rate_limit);
         async move {
             debug!("Enumerating directory {}", dir_path);
-            let sub_contents = fetch_github_contents(&http_client, request, &dir_path, token)
-                .await
-                .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
+            let sub_contents = fetch_github_contents(
+                &http_client,
+                request,
+                &dir_path,
+                token,
+                Arc::clone(&rate_limit),
+            )
+            .await
+            .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
             collect_download_tasks_inner(
                 &http_client,
                 request,
@@ -1041,6 +1318,7 @@ async fn collect_download_tasks_inner(
                 sub_contents,
                 files,
                 listing_parallel,
+                rate_limit,
             )
             .await
         }
@@ -1062,13 +1340,15 @@ async fn download_all_files(
     tasks: Vec<DownloadTask>,
     progress: Arc<Mutex<DownloadProgress>>,
     parallel: usize,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<()> {
     let effective_parallel = parallel.max(1);
 
     stream::iter(tasks.into_iter().map(|task| {
         let http_client = client.clone();
         let progress = Arc::clone(&progress);
-        async move { download_single_file(http_client, token, task, progress).await }
+        let rate_limit = Arc::clone(&rate_limit);
+        async move { download_single_file(http_client, token, task, progress, rate_limit).await }
     }))
     .buffer_unordered(effective_parallel)
     .try_collect::<Vec<_>>()
@@ -1081,6 +1361,7 @@ async fn download_single_file(
     token: Option<&str>,
     task: DownloadTask,
     progress: Arc<Mutex<DownloadProgress>>,
+    rate_limit: Arc<RateLimitTracker>,
 ) -> Result<()> {
     let DownloadTask {
         item,
@@ -1099,7 +1380,7 @@ async fn download_single_file(
         guard.log_start(&item.path, &target_path, size);
     }
 
-    download_file(&client, &item, token, &target_path).await?;
+    download_file(&client, &item, token, &target_path, &rate_limit).await?;
     {
         let mut guard = progress.lock().await;
         guard.record_download(&item.path, &target_path, size);
@@ -1148,6 +1429,7 @@ async fn download_file(
     item: &GitHubContent,
     token: Option<&str>,
     target_path: &Path,
+    rate_limit: &Arc<RateLimitTracker>,
 ) -> Result<()> {
     let mut request_builder = if let Some(ref url) = item.download_url {
         client.get(url)
@@ -1161,24 +1443,10 @@ async fn download_file(
         request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
-    let response = request_builder
-        .send()
+    let context = format!("downloading {}", item.path);
+    let response = send_github_request(&request_builder, rate_limit, &context)
         .await
         .with_context(|| format!("failed to download {}", item.path))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "<unable to read response body>".into());
-        return Err(anyhow!(
-            "failed to download {}: status {}: {}",
-            item.path,
-            status,
-            body
-        ));
-    }
 
     let mut file = tokio::fs::File::create(target_path)
         .await

@@ -100,14 +100,25 @@ detect_target() {
 
   case "${os}" in
   Linux)
-    case "${arch}" in
-    x86_64) echo "x86_64-unknown-linux-gnu" ;;
-    aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
-    *)
-      echo "error: unsupported architecture '${arch}' on Linux" >&2
-      return 1
-      ;;
-    esac
+    # Check if running on Android
+    if [[ -n "${ANDROID_ROOT:-}" ]] || [[ -f /system/build.prop ]] || [[ -f /system/bin/app_process ]]; then
+      case "${arch}" in
+      aarch64|arm64) echo "aarch64-linux-android" ;;
+      *)
+        echo "error: unsupported architecture '${arch}' on Android" >&2
+        return 1
+        ;;
+      esac
+    else
+      case "${arch}" in
+      x86_64) echo "x86_64-unknown-linux-gnu" ;;
+      aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+      *)
+        echo "error: unsupported architecture '${arch}' on Linux" >&2
+        return 1
+        ;;
+      esac
+    fi
     ;;
   Darwin)
     case "${arch}" in
