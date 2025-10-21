@@ -71,7 +71,9 @@
             cargoLock.lockFile = ./Cargo.lock;
             cargoHash = lib.fakeSha256;
 
-            nativeBuildInputs = with crossPkgs; [ pkg-config ];
+            # Don't include pkg-config for cross-compilation as it often fails
+            # and isn't needed for static Rust binaries
+            nativeBuildInputs = [ ];
             buildInputs = [ ];
 
             meta = with lib; {
