@@ -23,8 +23,8 @@ tokio = { version = "1", features = [
   "sync",
 ] }
 futures = "0.3"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
-self_update = { version = "0.42", features = [
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+self_update = { version = "0.42", default-features = false, features = [
   "archive-tar",
   "archive-zip",
   "compression-flate2",
@@ -34,6 +34,7 @@ self_update = { version = "0.42", features = [
 tempfile = "3.23.0"
 sha2 = "0.10"
 sha1 = "0.10"
+indicatif = { version = "0.18.1", features = ["tokio"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
