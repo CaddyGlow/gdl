@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use indicatif::MultiProgress;
 use log::{info, warn};
 use reqwest::Client;
 use tokio::sync::Mutex;
@@ -176,7 +177,12 @@ async fn download_via_rest(
     )
     .await?;
 
-    let progress = Arc::new(Mutex::new(DownloadProgress::new(total_files, total_bytes)));
+    let multi = MultiProgress::new();
+    let progress = Arc::new(Mutex::new(DownloadProgress::with_multi_progress(
+        total_files,
+        total_bytes,
+        Some(&multi),
+    )));
 
     log::debug!(
         "Prepared {} file(s) totaling {} for download",
@@ -197,6 +203,7 @@ async fn download_via_rest(
 
     let (downloaded_files, downloaded_bytes) = {
         let guard = progress.lock().await;
+        guard.finish();
         (guard.downloaded_files, guard.downloaded_bytes)
     };
 

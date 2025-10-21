@@ -1,5 +1,10 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Initialize logging with the specified verbosity level.
+///
+/// - 0: info
+/// - 1: debug
+/// - 2+: trace
 pub fn init_logging(verbosity: u8) {
     let default_level = match verbosity {
         0 => "info",

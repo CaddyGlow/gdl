@@ -171,6 +171,8 @@ fn download_via_git_blocking(
         progress.record_download(&task.item_path, &task.target_path, task.size);
     }
 
+    progress.finish();
+
     info!(
         "Finished downloading {} file(s) ({} total) from {} using git.",
         progress.downloaded_files,
