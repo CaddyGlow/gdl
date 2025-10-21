@@ -16,7 +16,7 @@ fn requires_url_argument() -> Result<(), Box<dyn std::error::Error>> {
     cmd.assert()
         .failure()
         .code(predicate::eq(2))
-        .stderr(contains("--url"));
+        .stderr(contains("<URL>"));
     Ok(())
 }
 

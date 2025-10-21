@@ -11,22 +11,26 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
-reqwest = { version = "0.11", default-features = false, features = [
-  "blocking",
-  "json",
-  "rustls-tls",
-] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.145"
 url = "2.5"
-self_update = { version = "0.37", default-features = false, features = [
+atty = "0.2"
+tokio = { version = "1", features = [
+  "macros",
+  "rt-multi-thread",
+  "fs",
+  "io-util",
+  "sync",
+] }
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+self_update = { version = "0.42", features = [
   "archive-tar",
   "archive-zip",
   "compression-flate2",
   "compression-zip-deflate",
   "rustls",
 ] }
-atty = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"

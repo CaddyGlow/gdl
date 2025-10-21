@@ -17,17 +17,17 @@ Download and install the latest release using the install script:
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash
 ```
 
 Or with options:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.sh | bash -s -- --prefix ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash -s -- --prefix ~/.local/bin
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.ps1 | iex
 ```
 
 The install scripts download pre-built binaries from GitHub releases. Available options:
@@ -56,28 +56,35 @@ cargo build --release
 
 ## Usage
 
-The `--url` flag is required and must point to a GitHub `tree` or `blob` URL that includes the branch name—just copy the address bar while browsing a folder or file.
+Pass one or more GitHub `tree` or `blob` URLs that include the branch name—just copy the address bar while browsing a folder or file.
 
 ```bash
-gdl --url https://github.com/owner/repo/tree/main/path/to/dir
+gdl https://github.com/owner/repo/tree/main/path/to/dir
 ```
 
 Optional flags:
-- `--output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories).
+- `--output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
 - `--self-update` – replace the current `gdl` binary with the latest GitHub release and exit. Honors `--token`/`GITHUB_TOKEN`/`GH_TOKEN` for private repositories.
 - `--check-update` – report whether a newer release is available without downloading it.
 - `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
+- `-v` / `-vv` – increase logging verbosity (debug/trace). Combine with `RUST_LOG` for fine-grained control.
 
 ### Examples
 
 Download a single file to the current directory without opening the raw view:
 ```bash
-gdl --url https://github.com/owner/repo/blob/main/path/file.yml
+gdl https://github.com/owner/repo/blob/main/path/file.yml
+```
+
+Download multiple paths in one invocation:
+```bash
+gdl https://github.com/owner/repo/blob/main/path/file.yml \
+    https://github.com/owner/repo/tree/main/examples
 ```
 
 Download an entire directory tree into `./examples`:
 ```bash
-gdl --url https://github.com/owner/repo/tree/main/examples --output ./examples
+gdl https://github.com/owner/repo/tree/main/examples --output ./examples
 ```
 
 Check for updates without downloading anything:
@@ -88,14 +95,15 @@ gdl --check-update
 Download from a private repository using a token:
 ```bash
 export GITHUB_TOKEN=ghp_your_personal_access_token
-gdl --url https://github.com/owner/private-repo/tree/main/config
+gdl https://github.com/owner/private-repo/tree/main/config
 ```
 
 ### Logging and debugging
 
 Logging levels can be adjusted with `RUST_LOG`:
 ```bash
-RUST_LOG=debug gdl --url https://github.com/owner/repo/tree/main/src
+gdl -v https://github.com/owner/repo/tree/main/src
+RUST_LOG=trace gdl -vv https://github.com/owner/repo/tree/main/src
 ```
 
 ## Development
@@ -106,10 +114,6 @@ cargo fmt
 cargo clippy --all-features -- -D warnings
 cargo test
 ```
-
-### Cutting a release
-
-Follow the step-by-step guide in [`docs/release.md`](docs/release.md) to prepare and publish a new tagged release.
 
 ### Nix workflow
 

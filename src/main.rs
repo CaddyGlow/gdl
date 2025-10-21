@@ -1,18 +1,23 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use clap::Parser;
-use log::{debug, info, warn};
-use reqwest::blocking::Client;
+use clap::{ArgAction, Parser};
+use futures::stream::{self, StreamExt, TryStreamExt};
+use log::{debug, info, trace, warn};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::Client;
 use self_update::backends::github;
 use self_update::update::ReleaseUpdate;
 use self_update::version;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 const VERSION: &str = env!("GDL_VERSION");
 const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
@@ -31,9 +36,13 @@ const POSTPONE_DURATION_SECS: u64 = 24 * 60 * 60;
     about = "Download files or directories from a GitHub repository via the REST API."
 )]
 struct Cli {
-    /// GitHub folder URL to download files from (e.g. https://github.com/owner/repo/tree/branch/path)
-    #[arg(long, required_unless_present_any = ["self_update", "check_update"])]
-    url: Option<String>,
+    /// GitHub folder URLs to download from (e.g. https://github.com/owner/repo/tree/branch/path)
+    #[arg(
+        value_name = "URL",
+        num_args = 1..,
+        required_unless_present_any = ["self_update", "check_update"]
+    )]
+    urls: Vec<String>,
 
     /// Update gdl to the latest release and exit
     #[arg(long)]
@@ -50,6 +59,14 @@ struct Cli {
     /// GitHub personal access token (falls back to GITHUB_TOKEN or GH_TOKEN env vars)
     #[arg(long)]
     token: Option<String>,
+
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
+    verbose: u8,
+
+    /// Maximum number of files to download concurrently
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    parallel: usize,
 }
 
 #[derive(Debug)]
@@ -66,10 +83,34 @@ struct GitHubContent {
     name: String,
     path: String,
     url: String,
+    size: Option<u64>,
     #[serde(rename = "download_url")]
     download_url: Option<String>,
     #[serde(rename = "type")]
     content_type: ContentType,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitTreeResponse {
+    tree: Vec<GitTreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: GitTreeEntryType,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum GitTreeEntryType {
+    Blob,
+    Tree,
+    Commit,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -84,15 +125,18 @@ enum ContentType {
 }
 
 fn main() -> Result<()> {
-    init_logging();
+    let cli = Cli::parse();
+    init_logging(cli.verbose);
 
     let Cli {
-        url,
+        urls,
         self_update,
         check_update,
         output,
         token,
-    } = Cli::parse();
+        verbose: _,
+        parallel,
+    } = cli;
 
     let token = token
         .or_else(|| env::var("GITHUB_TOKEN").ok())
@@ -108,8 +152,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let url = url.expect("clap enforces --url when no update flag is used");
-
     auto_check_for_updates(token.as_deref())?;
 
     let client = Client::builder()
@@ -117,10 +159,38 @@ fn main() -> Result<()> {
         .build()
         .context("failed to construct HTTP client")?;
 
-    let request = parse_github_url(&url)?;
+    let parallel = parallel.max(1);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build async runtime")?;
+
+    runtime.block_on(async move {
+        let output_ref = output.as_ref();
+        let token_ref = token.as_deref();
+        for url in urls {
+            download_github_path(&client, &url, output_ref, token_ref, parallel).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    info!("All downloads completed successfully.");
+    Ok(())
+}
+
+async fn download_github_path(
+    client: &Client,
+    url: &str,
+    output: Option<&PathBuf>,
+    token: Option<&str>,
+    parallel: usize,
+) -> Result<()> {
+    let request = parse_github_url(url)?;
     debug!("Parsed request info: {:?}", request);
 
-    let contents = fetch_github_contents(&client, &request, &request.path, token.as_deref())
+    let contents = fetch_github_contents(client, &request, &request.path, token)
+        .await
         .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
 
     if contents.is_empty() {
@@ -128,8 +198,24 @@ fn main() -> Result<()> {
     }
 
     let (base_path, default_output_dir) = determine_paths(&request, &contents);
-    let output_dir = output.unwrap_or(default_output_dir);
+    let output_dir = output.cloned().unwrap_or(default_output_dir);
 
+    let target_display = describe_download_target(&output_dir, &base_path, &contents)?;
+    let file_inventory = build_file_inventory(client, &request, token, &contents)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to enumerate files for {}/{}:{}:{}",
+                request.owner,
+                request.repo,
+                request.branch,
+                if request.path.is_empty() {
+                    "/".to_string()
+                } else {
+                    request.path.clone()
+                }
+            )
+        })?;
     ensure_directory(&output_dir)?;
 
     info!(
@@ -142,24 +228,282 @@ fn main() -> Result<()> {
         } else {
             &request.path
         },
-        output_dir.display()
+        target_display
     );
 
-    process_contents(
-        &client,
+    let total_files = file_inventory.len();
+    let total_bytes = file_inventory.values().filter_map(|meta| meta.size).sum();
+    let download_tasks = collect_download_tasks(
+        client,
         &request,
+        token,
         &output_dir,
         &base_path,
-        token.as_deref(),
         contents,
-    )?;
+        &file_inventory,
+        parallel,
+    )
+    .await?;
 
-    info!("Download completed.");
+    let progress = Arc::new(Mutex::new(DownloadProgress::new(total_files, total_bytes)));
+
+    debug!(
+        "Prepared {} file(s) totaling {} for download",
+        download_tasks.len(),
+        format_bytes(total_bytes)
+    );
+
+    download_all_files(
+        client,
+        token,
+        download_tasks,
+        Arc::clone(&progress),
+        parallel,
+    )
+    .await?;
+
+    let (downloaded_files, downloaded_bytes) = {
+        let guard = progress.lock().await;
+        (guard.downloaded_files, guard.downloaded_bytes)
+    };
+
+    info!(
+        "Finished downloading {} file(s) ({} total) from {}.",
+        downloaded_files,
+        format_bytes(downloaded_bytes),
+        url
+    );
+
     Ok(())
 }
 
-fn init_logging() {
-    let env = env_logger::Env::default().default_filter_or("info");
+fn format_path_for_log(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.display().to_string();
+    }
+
+    match path.components().next() {
+        Some(Component::CurDir) | Some(Component::ParentDir) | None => path.display().to_string(),
+        _ => format!("./{}", path.display()),
+    }
+}
+
+fn describe_download_target(
+    output_dir: &Path,
+    base_path: &Path,
+    contents: &[GitHubContent],
+) -> Result<String> {
+    if contents.len() == 1 && contents[0].content_type == ContentType::File {
+        let relative = relative_path(base_path, &contents[0])?;
+        let target = output_dir.join(relative);
+        Ok(format_path_for_log(&target))
+    } else {
+        Ok(format_path_for_log(output_dir))
+    }
+}
+
+async fn build_file_inventory(
+    client: &Client,
+    request: &RequestInfo,
+    token: Option<&str>,
+    contents: &[GitHubContent],
+) -> Result<HashMap<String, FileMetadata>> {
+    if contents.len() == 1 && contents[0].content_type == ContentType::File {
+        let mut map = HashMap::new();
+        map.insert(
+            contents[0].path.clone(),
+            FileMetadata {
+                size: contents[0].size,
+            },
+        );
+        return Ok(map);
+    }
+
+    let tree = fetch_git_tree(client, request, token).await?;
+    if tree.truncated {
+        warn!(
+            "GitHub tree listing for {}/{} may be incomplete (truncated).",
+            request.owner, request.repo
+        );
+    }
+
+    let mut files = HashMap::new();
+    let base_prefix = if request.path.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", request.path)
+    };
+
+    for entry in tree.tree {
+        if entry.entry_type != GitTreeEntryType::Blob {
+            continue;
+        }
+
+        let full_path = if base_prefix.is_empty() {
+            entry.path.trim_start_matches('/').to_string()
+        } else if entry.path.is_empty() {
+            request.path.clone()
+        } else {
+            format!("{}{}", base_prefix, entry.path.trim_start_matches('/'))
+        };
+
+        files.insert(full_path, FileMetadata { size: entry.size });
+    }
+
+    Ok(files)
+}
+
+async fn fetch_git_tree(
+    client: &Client,
+    request: &RequestInfo,
+    token: Option<&str>,
+) -> Result<GitTreeResponse> {
+    let tree_spec = if request.path.is_empty() {
+        request.branch.clone()
+    } else {
+        format!("{}:{}", request.branch, request.path)
+    };
+
+    let mut api_url = url::Url::parse("https://api.github.com/repos")
+        .context("failed to construct GitHub tree URL")?;
+    {
+        let mut segments = api_url
+            .path_segments_mut()
+            .map_err(|_| anyhow!("failed to manipulate GitHub tree URL"))?;
+        segments.push(&request.owner);
+        segments.push(&request.repo);
+        segments.push("git");
+        segments.push("trees");
+        segments.push(&tree_spec);
+    }
+    api_url.query_pairs_mut().append_pair("recursive", "1");
+
+    let mut request_builder = client.get(api_url);
+    if let Some(token) = token {
+        request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .context("GitHub git tree request failed")?;
+
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .context("failed to read GitHub git tree response")?;
+
+    if !status.is_success() {
+        let message = String::from_utf8_lossy(&body);
+        return Err(anyhow!(
+            "GitHub git tree API responded with status {}: {}",
+            status,
+            message
+        ));
+    }
+
+    let tree: GitTreeResponse =
+        serde_json::from_slice(&body).context("failed to decode GitHub tree response")?;
+    Ok(tree)
+}
+
+#[derive(Debug, Clone)]
+struct FileMetadata {
+    size: Option<u64>,
+}
+
+#[derive(Debug)]
+struct DownloadProgress {
+    total_files: usize,
+    downloaded_files: usize,
+    total_bytes: u64,
+    downloaded_bytes: u64,
+}
+
+impl DownloadProgress {
+    fn new(total_files: usize, total_bytes: u64) -> Self {
+        Self {
+            total_files,
+            downloaded_files: 0,
+            total_bytes,
+            downloaded_bytes: 0,
+        }
+    }
+
+    fn log_start(&self, item_path: &str, target_path: &Path, size: Option<u64>) {
+        let current = self.downloaded_files + 1;
+        let total = self.total_files.max(current);
+        let size_info = size
+            .map(|bytes| format_bytes(bytes))
+            .unwrap_or_else(|| "size unknown".to_string());
+        info!(
+            "Starting ({}/{}) {} -> {} [{}]",
+            current,
+            total,
+            item_path,
+            format_path_for_log(target_path),
+            size_info
+        );
+    }
+
+    fn record_download(&mut self, item_path: &str, target_path: &Path, size: Option<u64>) {
+        self.downloaded_files += 1;
+        if let Some(bytes) = size {
+            self.downloaded_bytes = self.downloaded_bytes.saturating_add(bytes);
+        }
+
+        let total = self.total_files.max(self.downloaded_files);
+        let size_info = match (size, self.total_bytes) {
+            (Some(bytes), total_bytes) if total_bytes > 0 => format!(
+                "{} ({} / {})",
+                format_bytes(bytes),
+                format_bytes(self.downloaded_bytes),
+                format_bytes(total_bytes)
+            ),
+            (Some(bytes), _) => format_bytes(bytes),
+            (None, total_bytes) if total_bytes > 0 => format!(
+                "{} / {}",
+                format_bytes(self.downloaded_bytes),
+                format_bytes(total_bytes)
+            ),
+            _ => "size unknown".to_string(),
+        };
+        info!(
+            "({}/{}) {} -> {} [{}]",
+            self.downloaded_files,
+            total,
+            item_path,
+            format_path_for_log(target_path),
+            size_info
+        );
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+
+    let exp = (bytes as f64).log(1024.0).floor() as usize;
+    let index = exp.min(UNITS.len() - 1);
+    let value = bytes as f64 / 1024_f64.powi(index as i32);
+    if index == 0 {
+        format!("{} {}", bytes, UNITS[index])
+    } else {
+        format!("{:.1} {}", value, UNITS[index])
+    }
+}
+
+fn init_logging(verbosity: u8) {
+    let default_level = match verbosity {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+
+    let env = env_logger::Env::default().default_filter_or(default_level);
     let _ = env_logger::Builder::from_env(env)
         .format_timestamp_secs()
         .try_init();
@@ -491,7 +835,7 @@ fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     })
 }
 
-fn fetch_github_contents(
+async fn fetch_github_contents(
     client: &Client,
     request: &RequestInfo,
     folder_path: &str,
@@ -527,11 +871,13 @@ fn fetch_github_contents(
 
     let response = request_builder
         .send()
+        .await
         .context("GitHub API request failed")?;
 
     let status = response.status();
     let body = response
         .bytes()
+        .await
         .context("failed to read GitHub API response")?;
 
     if !status.is_success() {
@@ -607,32 +953,63 @@ fn ensure_directory(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn process_contents(
+#[derive(Debug)]
+struct DownloadTask {
+    item: GitHubContent,
+    target_path: PathBuf,
+    size: Option<u64>,
+}
+
+async fn collect_download_tasks(
     client: &Client,
     request: &RequestInfo,
+    token: Option<&str>,
     output_dir: &Path,
     base_path: &Path,
-    token: Option<&str>,
     contents: Vec<GitHubContent>,
-) -> Result<()> {
+    files: &HashMap<String, FileMetadata>,
+    listing_parallel: usize,
+) -> Result<Vec<DownloadTask>> {
+    collect_download_tasks_inner(
+        client,
+        request,
+        token,
+        output_dir,
+        base_path,
+        contents,
+        files,
+        listing_parallel.max(1),
+    )
+    .await
+}
+
+async fn collect_download_tasks_inner(
+    client: &Client,
+    request: &RequestInfo,
+    token: Option<&str>,
+    output_dir: &Path,
+    base_path: &Path,
+    contents: Vec<GitHubContent>,
+    files: &HashMap<String, FileMetadata>,
+    listing_parallel: usize,
+) -> Result<Vec<DownloadTask>> {
+    let mut tasks = Vec::new();
+    let mut directories = Vec::new();
+
     for item in contents {
         match item.content_type {
             ContentType::File => {
-                info!("Downloading {}", item.path);
                 let relative = relative_path(base_path, &item)?;
                 let target_path = output_dir.join(&relative);
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).with_context(|| {
-                        format!("failed to create directory {}", parent.display())
-                    })?;
-                }
-                download_file(client, &item, token, &target_path)?;
+                let size = files.get(&item.path).and_then(|meta| meta.size);
+                tasks.push(DownloadTask {
+                    item,
+                    target_path,
+                    size,
+                });
             }
             ContentType::Dir => {
-                info!("Entering directory {}", item.path);
-                let sub_contents = fetch_github_contents(client, request, &item.path, token)
-                    .with_context(|| format!("unable to fetch contents of {}", item.path))?;
-                process_contents(client, request, output_dir, base_path, token, sub_contents)?;
+                directories.push(item);
             }
             ContentType::Symlink | ContentType::Submodule | ContentType::Other => {
                 warn!(
@@ -643,6 +1020,90 @@ fn process_contents(
         }
     }
 
+    if directories.is_empty() {
+        return Ok(tasks);
+    }
+
+    let sub_results = stream::iter(directories.into_iter().map(|dir_entry| {
+        let http_client = client.clone();
+        let dir_path = dir_entry.path.clone();
+        async move {
+            debug!("Enumerating directory {}", dir_path);
+            let sub_contents = fetch_github_contents(&http_client, request, &dir_path, token)
+                .await
+                .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
+            collect_download_tasks_inner(
+                &http_client,
+                request,
+                token,
+                output_dir,
+                base_path,
+                sub_contents,
+                files,
+                listing_parallel,
+            )
+            .await
+        }
+    }))
+    .buffer_unordered(listing_parallel)
+    .try_collect::<Vec<_>>()
+    .await?;
+
+    for sub in sub_results {
+        tasks.extend(sub);
+    }
+
+    Ok(tasks)
+}
+
+async fn download_all_files(
+    client: &Client,
+    token: Option<&str>,
+    tasks: Vec<DownloadTask>,
+    progress: Arc<Mutex<DownloadProgress>>,
+    parallel: usize,
+) -> Result<()> {
+    let effective_parallel = parallel.max(1);
+
+    stream::iter(tasks.into_iter().map(|task| {
+        let http_client = client.clone();
+        let progress = Arc::clone(&progress);
+        async move { download_single_file(http_client, token, task, progress).await }
+    }))
+    .buffer_unordered(effective_parallel)
+    .try_collect::<Vec<_>>()
+    .await
+    .map(|_| ())
+}
+
+async fn download_single_file(
+    client: Client,
+    token: Option<&str>,
+    task: DownloadTask,
+    progress: Arc<Mutex<DownloadProgress>>,
+) -> Result<()> {
+    let DownloadTask {
+        item,
+        target_path,
+        size,
+    } = task;
+
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+
+    {
+        let guard = progress.lock().await;
+        guard.log_start(&item.path, &target_path, size);
+    }
+
+    download_file(&client, &item, token, &target_path).await?;
+    {
+        let mut guard = progress.lock().await;
+        guard.record_download(&item.path, &target_path, size);
+    }
     Ok(())
 }
 
@@ -682,7 +1143,7 @@ fn relative_path(base_path: &Path, item: &GitHubContent) -> Result<PathBuf> {
     Ok(sanitized)
 }
 
-fn download_file(
+async fn download_file(
     client: &Client,
     item: &GitHubContent,
     token: Option<&str>,
@@ -700,14 +1161,16 @@ fn download_file(
         request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
-    let mut response = request_builder
+    let response = request_builder
         .send()
+        .await
         .with_context(|| format!("failed to download {}", item.path))?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response
             .text()
+            .await
             .unwrap_or_else(|_| "<unable to read response body>".into());
         return Err(anyhow!(
             "failed to download {}: status {}: {}",
@@ -717,11 +1180,20 @@ fn download_file(
         ));
     }
 
-    let mut file = File::create(target_path)
+    let mut file = tokio::fs::File::create(target_path)
+        .await
         .with_context(|| format!("failed to create file {}", target_path.display()))?;
-    io::copy(&mut response, &mut file)
-        .with_context(|| format!("failed to write content to {}", target_path.display()))?;
-    file.flush().context("failed to flush downloaded file")?;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("failed to read data for {}", item.path))?;
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("failed to write content to {}", target_path.display()))?;
+    }
+    file.flush()
+        .await
+        .with_context(|| format!("failed to flush downloaded file {}", target_path.display()))?;
 
     Ok(())
 }
@@ -741,6 +1213,7 @@ mod tests {
             name,
             path: path.to_string(),
             url: format!("https://api.example.com/repos/file/{}", path),
+            size: Some(42),
             download_url: Some(format!("https://raw.example.com/repos/file/{}", path)),
             content_type: ContentType::File,
         }
@@ -756,6 +1229,7 @@ mod tests {
             name,
             path: path.to_string(),
             url: format!("https://api.example.com/repos/dir/{}", path),
+            size: None,
             download_url: None,
             content_type: ContentType::Dir,
         }
