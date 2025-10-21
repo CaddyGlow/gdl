@@ -16,7 +16,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
         lib = pkgs.lib;
         cargoToml = lib.importTOML ./Cargo.toml;
         crateName = cargoToml.package.name;
@@ -83,54 +86,26 @@
             };
           };
 
-        # Android build helper function
+        # Android build helper function using Nix cross-compilation
         mkAndroidPackage =
-          target: targetName:
-          pkgs.stdenv.mkDerivation {
+          androidPkgs: targetName:
+          androidPkgs.rustPlatform.buildRustPackage {
             pname = "${crateName}-android-${targetName}";
             version = crateVersion;
             src = lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoHash = lib.fakeSha256;
 
-            nativeBuildInputs =
-              with pkgs;
-              [
-                cargo
-                rustc
-                cargo-ndk
-                rustup
-                pkg-config
-              ]
-              ++ lib.optionals pkgs.stdenv.isLinux [
-                pkgs.androidenv.androidPkgs.ndk-bundle
-              ];
+            nativeBuildInputs = [ ];
+            buildInputs = [ ];
 
-            buildInputs = [ pkgs.openssl ];
-
-            buildPhase = ''
-              export CARGO_HOME=$(mktemp -d)
-              # Add Android target
-              rustup target add ${target} || true
-
-              # Build with cargo-ndk
-              cargo ndk --target ${target} --platform 21 -- build --release
-            '';
-
-            installPhase = ''
-              mkdir -p $out/bin
-              # Copy the binary (not a .so for CLI tools)
-              if [ -f target/${target}/release/${crateName} ]; then
-                cp target/${target}/release/${crateName} $out/bin/
-              fi
-            '';
+            # Disable tests for cross-compilation
+            doCheck = false;
 
             meta = with lib; {
               description = "Small helper to launch applications with custom rules (Android ${targetName})";
               license = licenses.mit;
               maintainers = [ ];
-              platforms = [
-                "x86_64-linux"
-                "aarch64-linux"
-              ];
             };
           };
 
@@ -153,9 +128,9 @@
           linux-aarch64 = mkCrossPackage pkgs.pkgsCross.aarch64-multiplatform "linux-aarch64";
 
           # Android builds for common architectures
-          android-aarch64 = mkAndroidPackage "aarch64-linux-android" "aarch64";
-          android-armv7 = mkAndroidPackage "armv7-linux-androideabi" "armv7";
-          android-x86_64 = mkAndroidPackage "x86_64-linux-android" "x86_64";
+          android-aarch64 = mkAndroidPackage pkgs.pkgsCross.aarch64-android-prebuilt "aarch64";
+          android-armv7 = mkAndroidPackage pkgs.pkgsCross.armv7a-android-prebuilt "armv7";
+          android-x86_64 = mkAndroidPackage pkgs.pkgsCross.x86_64-android-prebuilt "x86_64";
         };
 
         apps.default = {

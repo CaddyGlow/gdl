@@ -118,6 +118,9 @@ jobs:
           ar = "${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           linker = "${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.android_triple }}${{ matrix.android_api }}-clang"
           EOF
+          TARGET_ENV=$(echo "${{ matrix.target }}" | tr '-' '_')
+          echo "CC_${TARGET_ENV}=${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.android_triple }}${{ matrix.android_api }}-clang" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_ENV}=${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
