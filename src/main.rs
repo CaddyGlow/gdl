@@ -11,12 +11,17 @@ use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use log::{debug, info, warn};
-use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, RETRY_AFTER};
+use reqwest::header::{
+    HeaderMap, ACCEPT, AUTHORIZATION, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, RANGE,
+    RETRY_AFTER,
+};
 use reqwest::{Client, StatusCode};
 use self_update::backends::github;
 use self_update::update::ReleaseUpdate;
 use self_update::version;
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -31,6 +36,8 @@ const GITHUB_REPO: &str = "gdl";
 const BIN_NAME: &str = "gdl";
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60;
 const POSTPONE_DURATION_SECS: u64 = 24 * 60 * 60;
+const DEFAULT_CACHE_TTL_SECS: u64 = 60 * 60; // 1 hour
+const DEFAULT_MAX_CACHE_SIZE_MB: u64 = 500;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum DownloadStrategy {
@@ -54,7 +61,7 @@ struct Cli {
     #[arg(
         value_name = "URL",
         num_args = 1..,
-        required_unless_present_any = ["self_update", "check_update"]
+        required_unless_present_any = ["self_update", "check_update", "clear_cache"]
     )]
     urls: Vec<String>,
 
@@ -85,6 +92,14 @@ struct Cli {
     /// Preferred download strategy (`api`, `git`, or `auto`)
     #[arg(long, value_enum, default_value_t = DownloadStrategy::Auto)]
     strategy: DownloadStrategy,
+
+    /// Disable HTTP response caching and download resume
+    #[arg(long)]
+    no_cache: bool,
+
+    /// Clear all cached data and exit
+    #[arg(long)]
+    clear_cache: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +128,7 @@ struct GitHubContent {
     download_url: Option<String>,
     #[serde(rename = "type")]
     content_type: ContentType,
+    sha: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +310,97 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     value.parse::<u64>().ok().map(Duration::from_secs)
 }
 
+async fn send_github_request_cached(
+    builder: &reqwest::RequestBuilder,
+    rate_limit: &Arc<RateLimitTracker>,
+    context: &str,
+    no_cache: bool,
+) -> Result<Vec<u8>> {
+    // Get the URL from the request builder for cache key
+    let url = builder
+        .try_clone()
+        .ok_or_else(|| anyhow!("failed to clone request for cache lookup"))?
+        .build()
+        .context("failed to build request for cache lookup")?
+        .url()
+        .to_string();
+
+    // Try to load from cache if caching is enabled
+    let cached = if !no_cache {
+        load_cached_response(&url, DEFAULT_CACHE_TTL_SECS)
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    // If we have a cached response, add conditional headers
+    let mut request_builder = builder
+        .try_clone()
+        .ok_or_else(|| anyhow!("failed to clone GitHub request for {}", context))?;
+
+    if let Some(ref cached_resp) = cached {
+        if let Some(ref etag) = cached_resp.etag {
+            request_builder = request_builder.header(IF_NONE_MATCH, etag.as_str());
+            debug!("Using cached etag for {}: {}", url, etag);
+        }
+        if let Some(ref last_mod) = cached_resp.last_modified {
+            request_builder = request_builder.header(IF_MODIFIED_SINCE, last_mod.as_str());
+            debug!("Using cached last-modified for {}: {}", url, last_mod);
+        }
+    }
+
+    let response = send_github_request(&request_builder, rate_limit, context).await?;
+    let status = response.status();
+
+    // Handle 304 Not Modified - return cached body
+    if status == StatusCode::NOT_MODIFIED {
+        if let Some(cached_resp) = cached {
+            info!("Cache hit (304 Not Modified) for {}", url);
+            return Ok(cached_resp.body);
+        } else {
+            return Err(anyhow!(
+                "Received 304 Not Modified but no cached response available"
+            ));
+        }
+    }
+
+    // Extract caching headers from response
+    let headers = response.headers();
+    let etag = headers
+        .get(ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let last_modified = headers
+        .get(LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Read response body
+    let body = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read response body for {}", context))?
+        .to_vec();
+
+    // Cache the response if caching is enabled
+    if !no_cache && (etag.is_some() || last_modified.is_some()) {
+        let cached_response = CachedResponse {
+            url: url.clone(),
+            body: body.clone(),
+            etag,
+            last_modified,
+            timestamp: system_time_to_secs(SystemTime::now()),
+        };
+
+        if let Err(e) = save_cached_response(&cached_response) {
+            warn!("Failed to cache response for {}: {}", url, e);
+        }
+    }
+
+    Ok(body)
+}
+
 async fn send_github_request(
     builder: &reqwest::RequestBuilder,
     rate_limit: &Arc<RateLimitTracker>,
@@ -350,7 +457,7 @@ async fn send_github_request(
         }
 
         let status = response.status();
-        if status.is_success() {
+        if status.is_success() || status == StatusCode::NOT_MODIFIED {
             return Ok(response);
         }
 
@@ -409,11 +516,18 @@ fn main() -> Result<()> {
         verbose: _,
         parallel,
         strategy,
+        no_cache,
+        clear_cache,
     } = cli;
 
     let token = token
         .or_else(|| env::var("GITHUB_TOKEN").ok())
         .or_else(|| env::var("GH_TOKEN").ok());
+
+    if clear_cache {
+        clear_all_caches()?;
+        return Ok(());
+    }
 
     if self_update {
         run_self_update(token.as_deref())?;
@@ -455,6 +569,7 @@ fn main() -> Result<()> {
                 parallel,
                 Arc::clone(&rate_limit),
                 strategy,
+                no_cache,
             )
             .await?;
         }
@@ -473,6 +588,7 @@ async fn download_github_path(
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
     strategy: DownloadStrategy,
+    no_cache: bool,
 ) -> Result<()> {
     let request = parse_github_url(url)?;
     debug!("Parsed request info: {:?}", request);
@@ -487,6 +603,7 @@ async fn download_github_path(
                 token,
                 parallel,
                 Arc::clone(&rate_limit),
+                no_cache,
             )
             .await
         }
@@ -503,6 +620,7 @@ async fn download_github_path(
                 token,
                 parallel,
                 Arc::clone(&rate_limit),
+                no_cache,
             )
             .await
             {
@@ -537,6 +655,7 @@ async fn download_via_rest(
     token: Option<&str>,
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<()> {
     let contents = fetch_github_contents(
         client,
@@ -544,6 +663,7 @@ async fn download_via_rest(
         &request.path,
         token,
         Arc::clone(&rate_limit),
+        no_cache,
     )
     .await
     .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
@@ -556,22 +676,28 @@ async fn download_via_rest(
     let output_dir = output.cloned().unwrap_or(default_output_dir);
 
     let target_display = describe_download_target(&output_dir, &base_path, &contents)?;
-    let file_inventory =
-        build_file_inventory(client, &request, token, &contents, Arc::clone(&rate_limit))
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to enumerate files for {}/{}:{}:{}",
-                    request.owner,
-                    request.repo,
-                    request.branch,
-                    if request.path.is_empty() {
-                        "/".to_string()
-                    } else {
-                        request.path.clone()
-                    }
-                )
-            })?;
+    let file_inventory = build_file_inventory(
+        client,
+        &request,
+        token,
+        &contents,
+        Arc::clone(&rate_limit),
+        no_cache,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "failed to enumerate files for {}/{}:{}:{}",
+            request.owner,
+            request.repo,
+            request.branch,
+            if request.path.is_empty() {
+                "/".to_string()
+            } else {
+                request.path.clone()
+            }
+        )
+    })?;
     ensure_directory(&output_dir)?;
 
     info!(
@@ -599,6 +725,7 @@ async fn download_via_rest(
         &file_inventory,
         parallel,
         Arc::clone(&rate_limit),
+        no_cache,
     )
     .await?;
 
@@ -617,6 +744,7 @@ async fn download_via_rest(
         Arc::clone(&progress),
         parallel,
         Arc::clone(&rate_limit),
+        no_cache,
     )
     .await?;
 
@@ -705,30 +833,29 @@ fn download_via_git_blocking(
     run_git_command(&clone_args, None, &[7])
         .with_context(|| format!("failed to clone {}", repo_url_display))?;
 
-    if request.kind == RequestKind::Blob {
+    let sparse_checkout_needed = !request.path.is_empty() || request.kind == RequestKind::Blob;
+    if sparse_checkout_needed {
+        if request.kind == RequestKind::Blob {
+            run_git_command(
+                &["sparse-checkout", "init", "--no-cone"],
+                Some(&repo_dir),
+                &[],
+            )
+            .context("failed to initialize sparse checkout (no-cone)")?;
+        } else {
+            run_git_command(&["sparse-checkout", "init", "--cone"], Some(&repo_dir), &[])
+                .context("failed to initialize sparse checkout (cone)")?;
+        }
+
+        let sparse_target = request.path.as_str();
+
         run_git_command(
-            &["sparse-checkout", "init", "--no-cone"],
+            &["sparse-checkout", "set", sparse_target],
             Some(&repo_dir),
             &[],
         )
-        .context("failed to initialize sparse checkout (no-cone)")?;
-    } else {
-        run_git_command(&["sparse-checkout", "init", "--cone"], Some(&repo_dir), &[])
-            .context("failed to initialize sparse checkout (cone)")?;
+        .with_context(|| format!("failed to configure sparse checkout for {}", sparse_target))?;
     }
-
-    let sparse_target = if request.path.is_empty() {
-        "."
-    } else {
-        request.path.as_str()
-    };
-
-    run_git_command(
-        &["sparse-checkout", "set", sparse_target],
-        Some(&repo_dir),
-        &[],
-    )
-    .with_context(|| format!("failed to configure sparse checkout for {}", sparse_target))?;
 
     run_git_command(
         &["checkout", "--progress", request.branch.as_str()],
@@ -893,6 +1020,7 @@ fn build_git_copy_tasks(
                 size: Some(metadata.len()),
                 download_url: None,
                 content_type: ContentType::File,
+                sha: None,
             };
             let relative_target = relative_path(base_path, &content)?;
             let target_path = output_dir.join(&relative_target);
@@ -945,6 +1073,7 @@ fn build_git_file_task(
         size: Some(metadata.len()),
         download_url: None,
         content_type: ContentType::File,
+        sha: None,
     };
     let relative_target = relative_path(base_path, &content)?;
     let target_path = output_dir.join(&relative_target);
@@ -1065,6 +1194,7 @@ async fn build_file_inventory(
     token: Option<&str>,
     contents: &[GitHubContent],
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<HashMap<String, FileMetadata>> {
     if contents.len() == 1 && contents[0].content_type == ContentType::File {
         let mut map = HashMap::new();
@@ -1077,7 +1207,7 @@ async fn build_file_inventory(
         return Ok(map);
     }
 
-    let tree = fetch_git_tree(client, request, token, Arc::clone(&rate_limit)).await?;
+    let tree = fetch_git_tree(client, request, token, Arc::clone(&rate_limit), no_cache).await?;
     if tree.truncated {
         warn!(
             "GitHub tree listing for {}/{} may be incomplete (truncated).",
@@ -1116,6 +1246,7 @@ async fn fetch_git_tree(
     request: &RequestInfo,
     token: Option<&str>,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<GitTreeResponse> {
     let tree_spec = if request.path.is_empty() {
         request.branch.clone()
@@ -1146,14 +1277,9 @@ async fn fetch_git_tree(
         "enumerating git tree for {}/{} ({})",
         request.owner, request.repo, tree_spec
     );
-    let response = send_github_request(&request_builder, &rate_limit, &context)
+    let body = send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
         .await
         .context("GitHub git tree request failed")?;
-
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read GitHub git tree response")?;
 
     let tree: GitTreeResponse =
         serde_json::from_slice(&body).context("failed to decode GitHub tree response")?;
@@ -1357,6 +1483,24 @@ enum UpdateDecision {
     Discard,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedResponse {
+    url: String,
+    body: Vec<u8>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    timestamp: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PartialDownload {
+    url: String,
+    path: PathBuf,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    timestamp: u64,
+}
+
 fn auto_check_for_updates(token: Option<&str>) -> Result<()> {
     if skip_self_update() {
         return Ok(());
@@ -1557,6 +1701,158 @@ fn system_time_from_secs(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
 
+fn cache_base_dir() -> Result<PathBuf> {
+    let base = env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".cache"))
+        })
+        .ok_or_else(|| {
+            anyhow!("Unable to determine cache directory (set XDG_CACHE_HOME or HOME)")
+        })?;
+
+    Ok(base.join("gdl"))
+}
+
+fn responses_cache_dir() -> Result<PathBuf> {
+    let dir = cache_base_dir()?.join("responses");
+    fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "failed to create responses cache directory {}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+fn downloads_cache_dir() -> Result<PathBuf> {
+    let dir = cache_base_dir()?.join("downloads");
+    fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "failed to create downloads cache directory {}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+fn cache_key(url: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn load_cached_response(url: &str, ttl_secs: u64) -> Result<Option<CachedResponse>> {
+    let key = cache_key(url);
+    let path = responses_cache_dir()?.join(format!("{}.json", key));
+
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(anyhow!(
+                "failed to open cached response file {}: {}",
+                path.display(),
+                err
+            ))
+        }
+    };
+
+    let cached: CachedResponse = match serde_json::from_reader(file) {
+        Ok(cached) => cached,
+        Err(err) => {
+            debug!(
+                "Unable to parse cached response file {}; ignoring: {}",
+                path.display(),
+                err
+            );
+            return Ok(None);
+        }
+    };
+
+    let now = system_time_to_secs(SystemTime::now());
+    if now - cached.timestamp > ttl_secs {
+        debug!(
+            "Cached response for {} expired (age: {}s, ttl: {}s)",
+            url,
+            now - cached.timestamp,
+            ttl_secs
+        );
+        return Ok(None);
+    }
+
+    debug!(
+        "Using cached response for {} (age: {}s)",
+        url,
+        now - cached.timestamp
+    );
+    Ok(Some(cached))
+}
+
+fn save_cached_response(cached: &CachedResponse) -> Result<()> {
+    let key = cache_key(&cached.url);
+    let path = responses_cache_dir()?.join(format!("{}.json", key));
+    let tmp_path = path.with_extension("json.tmp");
+
+    let mut file = File::create(&tmp_path).with_context(|| {
+        format!(
+            "failed to create temporary cache file {}",
+            tmp_path.display()
+        )
+    })?;
+
+    serde_json::to_writer(&mut file, cached)
+        .with_context(|| format!("failed to write cached response to {}", tmp_path.display()))?;
+
+    file.flush()
+        .with_context(|| format!("failed to flush cache file {}", tmp_path.display()))?;
+
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove existing cache file {}", path.display()))?;
+    }
+
+    fs::rename(&tmp_path, &path)
+        .with_context(|| format!("failed to persist cache file {}", path.display()))?;
+
+    debug!("Saved cached response for {}", cached.url);
+    Ok(())
+}
+
+fn clear_all_caches() -> Result<()> {
+    let base = cache_base_dir()?;
+
+    info!("Clearing all cached data from {}", base.display());
+
+    let responses_dir = base.join("responses");
+    if responses_dir.exists() {
+        fs::remove_dir_all(&responses_dir).with_context(|| {
+            format!(
+                "failed to remove responses cache {}",
+                responses_dir.display()
+            )
+        })?;
+        info!("Cleared response cache");
+    }
+
+    let downloads_dir = base.join("downloads");
+    if downloads_dir.exists() {
+        fs::remove_dir_all(&downloads_dir).with_context(|| {
+            format!(
+                "failed to remove downloads cache {}",
+                downloads_dir.display()
+            )
+        })?;
+        info!("Cleared downloads cache");
+    }
+
+    info!("All caches cleared successfully");
+    Ok(())
+}
+
 fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     let parsed = url::Url::parse(raw_url).context("invalid GitHub URL")?;
     let has_trailing_slash = raw_url.ends_with('/');
@@ -1604,6 +1900,7 @@ async fn fetch_github_contents(
     folder_path: &str,
     token: Option<&str>,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<Vec<GitHubContent>> {
     let mut api_url = url::Url::parse(&format!(
         "https://api.github.com/repos/{}/{}/contents",
@@ -1645,14 +1942,9 @@ async fn fetch_github_contents(
         }
     );
 
-    let response = send_github_request(&request_builder, &rate_limit, &context)
+    let body = send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
         .await
         .context("GitHub API request failed")?;
-
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read GitHub API response")?;
 
     let items: Result<Vec<GitHubContent>, _> = serde_json::from_slice(&body);
     match items {
@@ -1748,6 +2040,7 @@ async fn collect_download_tasks(
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<Vec<DownloadTask>> {
     collect_download_tasks_inner(
         client,
@@ -1759,6 +2052,7 @@ async fn collect_download_tasks(
         files,
         listing_parallel.max(1),
         rate_limit,
+        no_cache,
     )
     .await
 }
@@ -1773,6 +2067,7 @@ async fn collect_download_tasks_inner(
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<Vec<DownloadTask>> {
     let mut tasks = Vec::new();
     let mut directories = Vec::new();
@@ -1817,6 +2112,7 @@ async fn collect_download_tasks_inner(
                 &dir_path,
                 token,
                 Arc::clone(&rate_limit),
+                no_cache,
             )
             .await
             .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
@@ -1830,6 +2126,7 @@ async fn collect_download_tasks_inner(
                 files,
                 listing_parallel,
                 rate_limit,
+                no_cache,
             )
             .await
         }
@@ -1852,6 +2149,7 @@ async fn download_all_files(
     progress: Arc<Mutex<DownloadProgress>>,
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<()> {
     let effective_parallel = parallel.max(1);
 
@@ -1859,7 +2157,9 @@ async fn download_all_files(
         let http_client = client.clone();
         let progress = Arc::clone(&progress);
         let rate_limit = Arc::clone(&rate_limit);
-        async move { download_single_file(http_client, token, task, progress, rate_limit).await }
+        async move {
+            download_single_file(http_client, token, task, progress, rate_limit, no_cache).await
+        }
     }))
     .buffer_unordered(effective_parallel)
     .try_collect::<Vec<_>>()
@@ -1873,6 +2173,7 @@ async fn download_single_file(
     task: DownloadTask,
     progress: Arc<Mutex<DownloadProgress>>,
     rate_limit: Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<()> {
     let DownloadTask {
         item,
@@ -1891,7 +2192,7 @@ async fn download_single_file(
         guard.log_start(&item.path, &target_path, size);
     }
 
-    download_file(&client, &item, token, &target_path, &rate_limit).await?;
+    download_file(&client, &item, token, &target_path, &rate_limit, no_cache).await?;
     {
         let mut guard = progress.lock().await;
         guard.record_download(&item.path, &target_path, size);
@@ -1941,12 +2242,22 @@ async fn download_file(
     token: Option<&str>,
     target_path: &Path,
     rate_limit: &Arc<RateLimitTracker>,
+    no_cache: bool,
 ) -> Result<()> {
-    let mut request_builder = if let Some(ref url) = item.download_url {
+    let url = item.download_url.as_ref().unwrap_or(&item.url);
+
+    // Check for partial download to resume
+    let (start_byte, partial_file) = if !no_cache {
+        check_partial_download(target_path, item.size).await?
+    } else {
+        (0, None)
+    };
+
+    let mut request_builder = if item.download_url.is_some() {
         client.get(url)
     } else {
         client
-            .get(&item.url)
+            .get(url)
             .header(ACCEPT, "application/vnd.github.v3.raw")
     };
 
@@ -1954,27 +2265,179 @@ async fn download_file(
         request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
     }
 
+    // Add Range header for resume
+    if start_byte > 0 {
+        request_builder = request_builder.header(RANGE, format!("bytes={}-", start_byte));
+        debug!(
+            "Resuming download of {} from byte {}",
+            item.path, start_byte
+        );
+    }
+
     let context = format!("downloading {}", item.path);
     let response = send_github_request(&request_builder, rate_limit, &context)
         .await
         .with_context(|| format!("failed to download {}", item.path))?;
 
-    let mut file = tokio::fs::File::create(target_path)
-        .await
-        .with_context(|| format!("failed to create file {}", target_path.display()))?;
-    let mut stream = response.bytes_stream();
+    let status = response.status();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.with_context(|| format!("failed to read data for {}", item.path))?;
-        file.write_all(&chunk)
+    // Check if server supports range requests
+    let supports_resume = status == StatusCode::PARTIAL_CONTENT;
+
+    if start_byte > 0 && !supports_resume {
+        warn!(
+            "Server does not support resume for {}, restarting download",
+            item.path
+        );
+        // Delete partial file and start fresh
+        if let Some(pf) = partial_file {
+            drop(pf);
+            let _ = tokio::fs::remove_file(target_path).await;
+        }
+
+        // Retry without range header
+        let mut fresh_request = if item.download_url.is_some() {
+            client.get(url)
+        } else {
+            client
+                .get(url)
+                .header(ACCEPT, "application/vnd.github.v3.raw")
+        };
+
+        if let Some(token) = token {
+            fresh_request = fresh_request.header(AUTHORIZATION, format!("token {}", token.trim()));
+        }
+
+        let response = send_github_request(&fresh_request, rate_limit, &context)
             .await
-            .with_context(|| format!("failed to write content to {}", target_path.display()))?;
+            .with_context(|| format!("failed to download {}", item.path))?;
+
+        let mut file = tokio::fs::File::create(target_path)
+            .await
+            .with_context(|| format!("failed to create file {}", target_path.display()))?;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("failed to read data for {}", item.path))?;
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("failed to write content to {}", target_path.display()))?;
+        }
+        file.flush().await.with_context(|| {
+            format!("failed to flush downloaded file {}", target_path.display())
+        })?;
+    } else {
+        // Use existing file handle or create new one
+        let mut file = if let Some(pf) = partial_file {
+            pf
+        } else {
+            tokio::fs::File::create(target_path)
+                .await
+                .with_context(|| format!("failed to create file {}", target_path.display()))?
+        };
+
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("failed to read data for {}", item.path))?;
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("failed to write content to {}", target_path.display()))?;
+        }
+        file.flush().await.with_context(|| {
+            format!("failed to flush downloaded file {}", target_path.display())
+        })?;
     }
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush downloaded file {}", target_path.display()))?;
+
+    // Verify file hash if available
+    if let Some(ref expected_sha) = item.sha {
+        debug!("Verifying hash for {}", item.path);
+        if !verify_file_hash(target_path, expected_sha).await? {
+            let _ = tokio::fs::remove_file(target_path).await;
+            return Err(anyhow!(
+                "Hash verification failed for {}: file may be corrupted",
+                item.path
+            ));
+        }
+        debug!("Hash verification passed for {}", item.path);
+    }
 
     Ok(())
+}
+
+fn calculate_git_blob_sha1(content: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    let header = format!("blob {}\0", content.len());
+    hasher.update(header.as_bytes());
+    hasher.update(content);
+    format!("{:x}", hasher.finalize())
+}
+
+async fn verify_file_hash(path: &Path, expected_sha: &str) -> Result<bool> {
+    let content = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("failed to read file {} for hash verification", path.display()))?;
+
+    let calculated_sha = calculate_git_blob_sha1(&content);
+    Ok(calculated_sha == expected_sha)
+}
+
+async fn check_partial_download(
+    target_path: &Path,
+    expected_size: Option<u64>,
+) -> Result<(u64, Option<tokio::fs::File>)> {
+    // Check if file already exists
+    match tokio::fs::metadata(target_path).await {
+        Ok(metadata) => {
+            if metadata.is_file() {
+                let size = metadata.len();
+
+                // If we know the expected size, validate the partial file
+                if let Some(expected) = expected_size {
+                    if size >= expected {
+                        // File is complete or larger than expected, delete and start fresh
+                        debug!("Existing file at {} is complete or larger than expected ({} >= {}), replacing",
+                               target_path.display(), size, expected);
+                        let _ = tokio::fs::remove_file(target_path).await;
+                        return Ok((0, None));
+                    }
+                }
+
+                if size > 0 {
+                    // Open file in append mode for resume
+                    let file = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .append(true)
+                        .open(target_path)
+                        .await
+                        .with_context(|| {
+                            format!("failed to open partial file {}", target_path.display())
+                        })?;
+
+                    debug!(
+                        "Found partial download at {}, {} bytes",
+                        target_path.display(),
+                        size
+                    );
+                    return Ok((size, Some(file)));
+                }
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // File doesn't exist, start fresh
+            return Ok((0, None));
+        }
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "failed to check for partial download at {}",
+                    target_path.display()
+                )
+            });
+        }
+    }
+
+    Ok((0, None))
 }
 
 #[cfg(test)]
@@ -1995,6 +2458,7 @@ mod tests {
             size: Some(42),
             download_url: Some(format!("https://raw.example.com/repos/file/{}", path)),
             content_type: ContentType::File,
+            sha: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string()),
         }
     }
 
@@ -2011,6 +2475,7 @@ mod tests {
             size: None,
             download_url: None,
             content_type: ContentType::Dir,
+            sha: None,
         }
     }
 
