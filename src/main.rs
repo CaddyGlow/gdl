@@ -22,13 +22,15 @@ mod utils;
 use cache::clear_all_caches;
 use cli::Cli;
 use download::download_github_path;
+use github::fetch_rate_limit_info;
 use rate_limit::RateLimitTracker;
 use update::{auto_check_for_updates, check_for_update, run_self_update};
 use utils::init_logging;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_logging(cli.verbose);
+    let verbose = cli.verbose;
+    init_logging(verbose);
 
     let Cli {
         urls,
@@ -96,6 +98,13 @@ fn main() -> Result<()> {
             )
             .await?;
         }
+
+        // Fetch and display rate limit info in verbose mode
+        // Note: This endpoint does not count against your primary rate limit
+        if verbose >= 1 {
+            let _ = fetch_rate_limit_info(&client, token_ref).await;
+        }
+
         Ok::<(), anyhow::Error>(())
     })?;
 

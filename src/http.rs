@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use log::{debug, info, warn};
-use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+use log::{debug, warn};
+use reqwest::header::{ETAG, LAST_MODIFIED};
 use reqwest::StatusCode;
 use tokio::time::sleep;
 
@@ -36,36 +36,21 @@ pub async fn send_github_request_cached(
         None
     };
 
-    // If we have a cached response, add conditional headers
-    let mut request_builder = builder
+    // If we have a valid cached response, use it directly without making any request
+    // This avoids consuming GitHub API rate limit
+    if let Some(cached_resp) = cached {
+        debug!("Using cached response for {} (age: {}s, no request made)",
+               url,
+               system_time_to_secs(std::time::SystemTime::now()) - cached_resp.timestamp);
+        return Ok(cached_resp.body);
+    }
+
+    // No valid cache, make a fresh request
+    let request_builder = builder
         .try_clone()
         .ok_or_else(|| anyhow!("failed to clone GitHub request for {}", context))?;
 
-    if let Some(ref cached_resp) = cached {
-        if let Some(ref etag) = cached_resp.etag {
-            request_builder = request_builder.header(IF_NONE_MATCH, etag.as_str());
-            debug!("Using cached etag for {}: {}", url, etag);
-        }
-        if let Some(ref last_mod) = cached_resp.last_modified {
-            request_builder = request_builder.header(IF_MODIFIED_SINCE, last_mod.as_str());
-            debug!("Using cached last-modified for {}: {}", url, last_mod);
-        }
-    }
-
     let response = send_github_request(&request_builder, rate_limit, context).await?;
-    let status = response.status();
-
-    // Handle 304 Not Modified - return cached body
-    if status == StatusCode::NOT_MODIFIED {
-        if let Some(cached_resp) = cached {
-            info!("Cache hit (304 Not Modified) for {}", url);
-            return Ok(cached_resp.body);
-        } else {
-            return Err(anyhow!(
-                "Received 304 Not Modified but no cached response available"
-            ));
-        }
-    }
 
     // Extract caching headers from response
     let headers = response.headers();

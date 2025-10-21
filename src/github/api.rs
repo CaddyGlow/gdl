@@ -1,16 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
-use log::warn;
+use log::{debug, warn};
 use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
+use serde::Deserialize;
 
 use crate::github::types::{GitHubContent, GitTreeResponse};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{FileMetadata, RequestInfo};
 use crate::github::types::GitTreeEntryType;
-
-use std::collections::HashMap;
 
 pub async fn fetch_github_contents(
     client: &Client,
@@ -216,6 +217,66 @@ pub fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
         has_trailing_slash,
         kind,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct RateLimitResource {
+    limit: u64,
+    remaining: u64,
+    used: u64,
+    reset: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RateLimitResponse {
+    resources: RateLimitResources,
+}
+
+#[derive(Debug, Deserialize)]
+struct RateLimitResources {
+    core: RateLimitResource,
+}
+
+/// Fetch rate limit information from the GitHub API
+/// Note: This endpoint does not count against your primary rate limit
+pub async fn fetch_rate_limit_info(client: &Client, token: Option<&str>) -> Result<()> {
+    let mut request = client.get("https://api.github.com/rate_limit");
+
+    if let Some(token) = token {
+        request = request.header(AUTHORIZATION, format!("token {}", token.trim()));
+    }
+
+    let response = request
+        .send()
+        .await
+        .context("failed to fetch rate limit information")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "rate limit check failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let rate_limit: RateLimitResponse = response
+        .json()
+        .await
+        .context("failed to parse rate limit response")?;
+
+    let core = &rate_limit.resources.core;
+    let reset_time = UNIX_EPOCH + Duration::from_secs(core.reset);
+    let eta = reset_time
+        .duration_since(SystemTime::now())
+        .ok()
+        .map(|d| format!("in {}s", d.as_secs()))
+        .unwrap_or_else(|| "now".to_string());
+
+    debug!(
+        "GitHub API rate limit: {}/{} remaining (used: {}, resets {})",
+        core.remaining, core.limit, core.used, eta
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
