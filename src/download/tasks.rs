@@ -7,8 +7,8 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use log::{debug, warn};
 use reqwest::Client;
 
-use crate::github::types::{ContentType, GitHubContent};
 use crate::github::fetch_github_contents;
+use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::relative_path;
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{DownloadTask, FileMetadata, RequestInfo};

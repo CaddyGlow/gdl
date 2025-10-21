@@ -55,7 +55,10 @@ pub struct RateLimitTracker {
 }
 
 impl RateLimitTracker {
-    pub async fn record_headers(&self, headers: &HeaderMap) -> Option<(RateLimitSnapshot, bool, bool)> {
+    pub async fn record_headers(
+        &self,
+        headers: &HeaderMap,
+    ) -> Option<(RateLimitSnapshot, bool, bool)> {
         let snapshot = RateLimitSnapshot::from_headers(headers)?;
         let mut state = self.state.lock().await;
 

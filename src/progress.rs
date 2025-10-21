@@ -32,7 +32,9 @@ impl DownloadProgress {
             let file_pb = mp.add(ProgressBar::new(total_files as u64));
             file_pb.set_style(
                 ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)")
+                    .template(
+                        "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)",
+                    )
                     .expect("invalid progress bar template")
                     .progress_chars("#>-"),
             );
@@ -41,7 +43,9 @@ impl DownloadProgress {
             let byte_pb = mp.add(ProgressBar::new(total_bytes));
             byte_pb.set_style(
                 ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)")
+                    .template(
+                        "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)",
+                    )
                     .expect("invalid progress bar template")
                     .progress_chars("#>-"),
             );

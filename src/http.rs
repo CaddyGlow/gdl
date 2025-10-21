@@ -39,9 +39,11 @@ pub async fn send_github_request_cached(
     // If we have a valid cached response, use it directly without making any request
     // This avoids consuming GitHub API rate limit
     if let Some(cached_resp) = cached {
-        debug!("Using cached response for {} (age: {}s, no request made)",
-               url,
-               system_time_to_secs(std::time::SystemTime::now()) - cached_resp.timestamp);
+        debug!(
+            "Using cached response for {} (age: {}s, no request made)",
+            url,
+            system_time_to_secs(std::time::SystemTime::now()) - cached_resp.timestamp
+        );
         return Ok(cached_resp.body);
     }
 

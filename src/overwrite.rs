@@ -30,7 +30,10 @@ pub fn check_overwrite_permission(
 
     // If force flag is set, proceed without prompting
     if force {
-        debug!("Force flag set, overwriting {} existing file(s)", existing_files.len());
+        debug!(
+            "Force flag set, overwriting {} existing file(s)",
+            existing_files.len()
+        );
         return Ok(());
     }
 
@@ -51,7 +54,10 @@ pub fn check_overwrite_permission(
 }
 
 fn prompt_user_for_overwrite(existing_files: &[&Path]) -> Result<()> {
-    warn!("The following {} file(s) already exist:", existing_files.len());
+    warn!(
+        "The following {} file(s) already exist:",
+        existing_files.len()
+    );
     for path in existing_files.iter().take(10) {
         eprintln!("  - {}", path.display());
     }

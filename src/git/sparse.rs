@@ -95,7 +95,10 @@ fn download_via_git_blocking(
         } else {
             debug!("Cached repository is invalid, removing...");
             fs::remove_dir_all(&repo_dir).with_context(|| {
-                format!("failed to remove invalid cached repository {}", repo_dir.display())
+                format!(
+                    "failed to remove invalid cached repository {}",
+                    repo_dir.display()
+                )
             })?;
             true
         }

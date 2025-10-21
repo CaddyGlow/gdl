@@ -30,7 +30,10 @@ pub async fn download_via_zip(
     let token = token.map(|t| t.to_string());
     let client = client.clone();
 
-    download_via_zip_impl(client, request, url, output, token, rate_limit, no_cache, force).await
+    download_via_zip_impl(
+        client, request, url, output, token, rate_limit, no_cache, force,
+    )
+    .await
 }
 
 async fn download_via_zip_impl(
@@ -88,9 +91,10 @@ async fn download_zip_file(
         req = req.header("Authorization", format!("token {}", token));
     }
 
-    let response = req.send().await.with_context(|| {
-        format!("failed to send request to {}", url)
-    })?;
+    let response = req
+        .send()
+        .await
+        .with_context(|| format!("failed to send request to {}", url))?;
 
     // Update rate limit
     rate_limit.record_headers(response.headers()).await;
@@ -109,21 +113,24 @@ async fn download_zip_file(
 
     // Create temp file and download
     let temp_path = dest_path.with_extension("zip.tmp");
-    let mut file = File::create(&temp_path).with_context(|| {
-        format!("failed to create temporary file {}", temp_path.display())
-    })?;
+    let mut file = File::create(&temp_path)
+        .with_context(|| format!("failed to create temporary file {}", temp_path.display()))?;
 
-    let content = response.bytes().await.with_context(|| {
-        format!("failed to download zip from {}", url)
-    })?;
+    let content = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to download zip from {}", url))?;
 
-    io::copy(&mut content.as_ref(), &mut file).with_context(|| {
-        format!("failed to write zip data to {}", temp_path.display())
-    })?;
+    io::copy(&mut content.as_ref(), &mut file)
+        .with_context(|| format!("failed to write zip data to {}", temp_path.display()))?;
 
     // Rename temp file to final path
     fs::rename(&temp_path, dest_path).with_context(|| {
-        format!("failed to move {} to {}", temp_path.display(), dest_path.display())
+        format!(
+            "failed to move {} to {}",
+            temp_path.display(),
+            dest_path.display()
+        )
     })?;
 
     debug!("Downloaded zip archive to {}", dest_path.display());
@@ -137,13 +144,11 @@ fn extract_from_zip(
     url: &str,
     force: bool,
 ) -> Result<()> {
-    let file = File::open(zip_path).with_context(|| {
-        format!("failed to open zip file {}", zip_path.display())
-    })?;
+    let file = File::open(zip_path)
+        .with_context(|| format!("failed to open zip file {}", zip_path.display()))?;
 
-    let mut archive = zip::ZipArchive::new(file).with_context(|| {
-        format!("failed to read zip archive {}", zip_path.display())
-    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("failed to read zip archive {}", zip_path.display()))?;
 
     // GitHub zips have a root directory named "{repo}-{branch}/"
     let zip_prefix = format!("{}-{}/", request.repo, request.branch);
@@ -168,9 +173,9 @@ fn extract_from_zip(
     let mut total_bytes: u64 = 0;
 
     for i in 0..archive.len() {
-        let file = archive.by_index(i).with_context(|| {
-            format!("failed to access file at index {} in zip", i)
-        })?;
+        let file = archive
+            .by_index(i)
+            .with_context(|| format!("failed to access file at index {} in zip", i))?;
 
         let file_path = file.name().to_string();
 
@@ -188,8 +193,7 @@ fn extract_from_zip(
         }
 
         // Strip the zip prefix from the path
-        let relative_path = file_path.strip_prefix(&zip_prefix)
-            .unwrap_or(&file_path);
+        let relative_path = file_path.strip_prefix(&zip_prefix).unwrap_or(&file_path);
 
         debug!("Found matching file in zip: {}", relative_path);
 
@@ -267,9 +271,9 @@ fn extract_from_zip(
         let mut found = false;
         for i in 0..archive.len() {
             {
-                let file = archive.by_index(i).with_context(|| {
-                    format!("failed to access file at index {} in zip", i)
-                })?;
+                let file = archive
+                    .by_index(i)
+                    .with_context(|| format!("failed to access file at index {} in zip", i))?;
 
                 if file.name() != zip_path_to_find {
                     continue;
@@ -303,25 +307,22 @@ fn extract_file_from_zip(
     task: &FileCopyTask,
     progress: &mut DownloadProgress,
 ) -> Result<()> {
-    let mut file = archive.by_index(index).with_context(|| {
-        format!("failed to access file at index {} in zip", index)
-    })?;
+    let mut file = archive
+        .by_index(index)
+        .with_context(|| format!("failed to access file at index {} in zip", index))?;
 
     if let Some(parent) = task.target_path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("failed to create output directory {}", parent.display())
-        })?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output directory {}", parent.display()))?;
     }
 
     progress.log_start(&task.item_path, &task.target_path, task.size);
 
-    let mut output_file = File::create(&task.target_path).with_context(|| {
-        format!("failed to create file {}", task.target_path.display())
-    })?;
+    let mut output_file = File::create(&task.target_path)
+        .with_context(|| format!("failed to create file {}", task.target_path.display()))?;
 
-    io::copy(&mut file, &mut output_file).with_context(|| {
-        format!("failed to extract file to {}", task.target_path.display())
-    })?;
+    io::copy(&mut file, &mut output_file)
+        .with_context(|| format!("failed to extract file to {}", task.target_path.display()))?;
 
     progress.record_download(&task.item_path, &task.target_path, task.size);
 

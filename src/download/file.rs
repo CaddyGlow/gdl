@@ -152,9 +152,12 @@ fn calculate_git_blob_sha1(content: &[u8]) -> String {
 }
 
 async fn verify_file_hash(path: &Path, expected_sha: &str) -> Result<bool> {
-    let content = tokio::fs::read(path)
-        .await
-        .with_context(|| format!("failed to read file {} for hash verification", path.display()))?;
+    let content = tokio::fs::read(path).await.with_context(|| {
+        format!(
+            "failed to read file {} for hash verification",
+            path.display()
+        )
+    })?;
 
     let calculated_sha = calculate_git_blob_sha1(&content);
     Ok(calculated_sha == expected_sha)

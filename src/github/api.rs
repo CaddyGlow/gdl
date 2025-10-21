@@ -8,10 +8,10 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
 use serde::Deserialize;
 
+use crate::github::types::GitTreeEntryType;
 use crate::github::types::{GitHubContent, GitTreeResponse};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{FileMetadata, RequestInfo};
-use crate::github::types::GitTreeEntryType;
 
 pub async fn fetch_github_contents(
     client: &Client,
@@ -61,9 +61,10 @@ pub async fn fetch_github_contents(
         }
     );
 
-    let body = crate::http::send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
-        .await
-        .context("GitHub API request failed")?;
+    let body =
+        crate::http::send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
+            .await
+            .context("GitHub API request failed")?;
 
     let items: Result<Vec<GitHubContent>, _> = serde_json::from_slice(&body);
     match items {
@@ -112,9 +113,10 @@ pub async fn fetch_git_tree(
         "enumerating git tree for {}/{} ({})",
         request.owner, request.repo, tree_spec
     );
-    let body = crate::http::send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
-        .await
-        .context("GitHub git tree request failed")?;
+    let body =
+        crate::http::send_github_request_cached(&request_builder, &rate_limit, &context, no_cache)
+            .await
+            .context("GitHub git tree request failed")?;
 
     let tree: GitTreeResponse =
         serde_json::from_slice(&body).context("failed to decode GitHub tree response")?;

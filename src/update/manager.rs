@@ -8,9 +8,9 @@ use self_update::backends::github;
 use self_update::update::ReleaseUpdate;
 use self_update::version;
 
-use crate::utils::{system_time_from_secs, system_time_to_secs};
 use super::prompt::prompt_for_update;
 use super::state::{load_update_state, save_update_state, update_state_path, UpdateDecision};
+use crate::utils::{system_time_from_secs, system_time_to_secs};
 
 const GITHUB_OWNER: &str = "CaddyGlow";
 const GITHUB_REPO: &str = "gdl";

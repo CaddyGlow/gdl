@@ -70,12 +70,8 @@ pub fn downloads_cache_dir() -> Result<PathBuf> {
 
 pub fn repos_cache_dir() -> Result<PathBuf> {
     let dir = cache_base_dir()?.join("repos");
-    fs::create_dir_all(&dir).with_context(|| {
-        format!(
-            "failed to create repos cache directory {}",
-            dir.display()
-        )
-    })?;
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create repos cache directory {}", dir.display()))?;
     Ok(dir)
 }
 
@@ -191,12 +187,8 @@ pub fn clear_all_caches() -> Result<()> {
 
     let repos_dir = base.join("repos");
     if repos_dir.exists() {
-        fs::remove_dir_all(&repos_dir).with_context(|| {
-            format!(
-                "failed to remove repos cache {}",
-                repos_dir.display()
-            )
-        })?;
+        fs::remove_dir_all(&repos_dir)
+            .with_context(|| format!("failed to remove repos cache {}", repos_dir.display()))?;
         info!("Cleared repos cache");
     }
 
