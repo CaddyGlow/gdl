@@ -68,6 +68,17 @@ pub fn downloads_cache_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+pub fn repos_cache_dir() -> Result<PathBuf> {
+    let dir = cache_base_dir()?.join("repos");
+    fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "failed to create repos cache directory {}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
 fn cache_key(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
@@ -176,6 +187,17 @@ pub fn clear_all_caches() -> Result<()> {
             )
         })?;
         info!("Cleared downloads cache");
+    }
+
+    let repos_dir = base.join("repos");
+    if repos_dir.exists() {
+        fs::remove_dir_all(&repos_dir).with_context(|| {
+            format!(
+                "failed to remove repos cache {}",
+                repos_dir.display()
+            )
+        })?;
+        info!("Cleared repos cache");
     }
 
     info!("All caches cleared successfully");

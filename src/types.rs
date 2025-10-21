@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {
@@ -34,4 +34,24 @@ pub struct FileCopyTask {
     pub source_path: PathBuf,
     pub target_path: PathBuf,
     pub size: Option<u64>,
+}
+
+impl crate::overwrite::TargetPath for DownloadTask {
+    fn path(&self) -> &Path {
+        &self.target_path
+    }
+
+    fn size(&self) -> u64 {
+        self.size.unwrap_or(0)
+    }
+}
+
+impl crate::overwrite::TargetPath for FileCopyTask {
+    fn path(&self) -> &Path {
+        &self.target_path
+    }
+
+    fn size(&self) -> u64 {
+        self.size.unwrap_or(0)
+    }
 }

@@ -12,7 +12,9 @@ pub enum DownloadStrategy {
     Api,
     /// Use git sparse checkout to retrieve content.
     Git,
-    /// Try the REST API first, then fall back to git if needed.
+    /// Download repository zip archive and extract specific files.
+    Zip,
+    /// Try the REST API first, then fall back to zip or git if needed.
     Auto,
 }
 
@@ -67,4 +69,8 @@ pub struct Cli {
     /// Clear all cached data and exit
     #[arg(long)]
     pub clear_cache: bool,
+
+    /// Force overwrite existing files without prompting
+    #[arg(long, short = 'f')]
+    pub force: bool,
 }

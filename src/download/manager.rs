@@ -13,10 +13,12 @@ use crate::cli::DownloadStrategy;
 use crate::download::{collect_download_tasks, download_file};
 use crate::git::{download_via_git, ensure_git_available, git_available};
 use crate::github::{build_file_inventory, fetch_github_contents, parse_github_url};
+use crate::overwrite::{check_overwrite_permission, collect_target_paths};
 use crate::paths::{describe_download_target, determine_paths, ensure_directory};
 use crate::progress::{format_bytes, DownloadProgress};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{DownloadTask, RequestInfo};
+use crate::zip::download_via_zip;
 
 pub async fn download_github_path(
     client: &Client,
@@ -27,6 +29,7 @@ pub async fn download_github_path(
     rate_limit: Arc<RateLimitTracker>,
     strategy: DownloadStrategy,
     no_cache: bool,
+    force: bool,
 ) -> Result<()> {
     let request = parse_github_url(url)?;
     log::debug!("Parsed request info: {:?}", request);
@@ -43,12 +46,26 @@ pub async fn download_github_path(
                 parallel,
                 Arc::clone(&rate_limit),
                 no_cache,
+                force,
             )
             .await
         }
         DownloadStrategy::Git => {
             ensure_git_available()?;
-            download_via_git(&request, url, output, token).await
+            download_via_git(&request, url, output, token, force).await
+        }
+        DownloadStrategy::Zip => {
+            download_via_zip(
+                client,
+                &request,
+                url,
+                output,
+                token,
+                Arc::clone(&rate_limit),
+                no_cache,
+                force,
+            )
+            .await
         }
         DownloadStrategy::Auto => {
             match download_via_rest(
@@ -60,25 +77,49 @@ pub async fn download_github_path(
                 parallel,
                 Arc::clone(&rate_limit),
                 no_cache,
+                force,
             )
             .await
             {
                 Ok(()) => Ok(()),
                 Err(api_err) => {
-                    if git_available() {
-                        warn!(
-                            "REST download failed ({}); attempting git sparse checkout...",
-                            api_err
-                        );
-                        match download_via_git(&request, url, output, token).await {
-                            Ok(()) => Ok(()),
-                            Err(git_err) => {
+                    // Try zip strategy first
+                    warn!(
+                        "REST download failed ({}); attempting zip archive download...",
+                        api_err
+                    );
+                    match download_via_zip(
+                        client,
+                        &request,
+                        url,
+                        output,
+                        token,
+                        Arc::clone(&rate_limit),
+                        no_cache,
+                        force,
+                    )
+                    .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(zip_err) => {
+                            // Finally try git sparse checkout if available
+                            if git_available() {
+                                warn!(
+                                    "Zip download failed ({}); attempting git sparse checkout...",
+                                    zip_err
+                                );
+                                match download_via_git(&request, url, output, token, force).await {
+                                    Ok(()) => Ok(()),
+                                    Err(git_err) => Err(api_err.context(format!(
+                                        "zip fallback failed: {}; git fallback also failed: {}",
+                                        zip_err, git_err
+                                    ))),
+                                }
+                            } else {
                                 Err(api_err
-                                    .context(format!("git fallback also failed: {}", git_err)))
+                                    .context(format!("zip fallback also failed: {}", zip_err)))
                             }
                         }
-                    } else {
-                        Err(api_err)
                     }
                 }
             }
@@ -104,6 +145,7 @@ async fn download_via_rest(
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
     no_cache: bool,
+    force: bool,
 ) -> Result<()> {
     let contents = fetch_github_contents(
         client,
@@ -176,6 +218,10 @@ async fn download_via_rest(
         no_cache,
     )
     .await?;
+
+    // Check for file overwrites before proceeding
+    let target_paths = collect_target_paths(&download_tasks);
+    check_overwrite_permission(&target_paths, force)?;
 
     let multi = MultiProgress::new();
     let progress = Arc::new(Mutex::new(DownloadProgress::with_multi_progress(

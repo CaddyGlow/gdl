@@ -12,12 +12,14 @@ mod download;
 mod git;
 mod github;
 mod http;
+mod overwrite;
 mod paths;
 mod progress;
 mod rate_limit;
 mod types;
 mod update;
 mod utils;
+mod zip;
 
 use cache::clear_all_caches;
 use cli::Cli;
@@ -43,6 +45,7 @@ fn main() -> Result<()> {
         strategy,
         no_cache,
         clear_cache,
+        force,
     } = cli;
 
     let token = token
@@ -95,6 +98,7 @@ fn main() -> Result<()> {
                 Arc::clone(&rate_limit),
                 strategy,
                 no_cache,
+                force,
             )
             .await?;
         }

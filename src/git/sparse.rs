@@ -2,10 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use log::{info, warn};
-use tempfile::TempDir;
+use log::{debug, info, warn};
+use sha2::{Digest, Sha256};
 use tokio::task::spawn_blocking;
 
+use crate::cache::repos_cache_dir;
 use crate::git::utils::{ensure_git_available, run_git_command};
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
@@ -17,13 +18,14 @@ pub async fn download_via_git(
     url: &str,
     output: Option<&PathBuf>,
     token: Option<&str>,
+    force: bool,
 ) -> Result<()> {
     let request = request.clone();
     let url = url.to_string();
     let output = output.cloned();
     let token = token.map(|t| t.to_string());
 
-    spawn_blocking(move || download_via_git_blocking(request, url, output, token))
+    spawn_blocking(move || download_via_git_blocking(request, url, output, token, force))
         .await
         .map_err(|err| anyhow!("git download task failed: {}", err))??;
     Ok(())
@@ -34,6 +36,7 @@ fn download_via_git_blocking(
     url: String,
     output: Option<PathBuf>,
     token: Option<String>,
+    force: bool,
 ) -> Result<()> {
     ensure_git_available()?;
 
@@ -60,27 +63,63 @@ fn download_via_git_blocking(
     let repo_url_string = repo_url.to_string();
     let repo_url_display = format!("https://github.com/{}/{}.git", request.owner, request.repo);
 
-    let temp_dir =
-        TempDir::new().context("failed to create temporary directory for git checkout")?;
-    let repo_dir = temp_dir.path().join("repo");
+    // Use cache directory instead of temp directory
+    let cache_dir = repos_cache_dir()?;
+
+    // Create a unique directory name based on owner/repo/branch
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}/{}/{}", request.owner, request.repo, request.branch).as_bytes());
+    let repo_hash = format!("{:x}", hasher.finalize());
+    let repo_name = format!("{}-{}-{}", request.owner, request.repo, &repo_hash[..8]);
+
+    let repo_dir = cache_dir.join(&repo_name);
     let repo_dir_str = repo_dir
         .to_str()
-        .ok_or_else(|| anyhow!("temporary directory path contains invalid UTF-8"))?;
+        .ok_or_else(|| anyhow!("cache directory path contains invalid UTF-8"))?;
 
-    let clone_args = vec![
-        "clone",
-        "--filter=blob:none",
-        "--depth=1",
-        "--branch",
-        request.branch.as_str(),
-        "--single-branch",
-        "--no-checkout",
-        repo_url_string.as_str(),
-        repo_dir_str,
-    ];
+    // Check if repo already exists and is valid
+    let needs_clone = if repo_dir.exists() {
+        debug!("Found cached repository at {}", repo_dir.display());
+        // Verify it's a valid git repository
+        let is_valid = run_git_command(&["rev-parse", "--git-dir"], Some(&repo_dir), &[]).is_ok();
+        if is_valid {
+            debug!("Cached repository is valid, updating...");
+            // Update the repository
+            run_git_command(
+                &["fetch", "--depth=1", "origin", request.branch.as_str()],
+                Some(&repo_dir),
+                &[7],
+            )
+            .with_context(|| format!("failed to update cached repository {}", repo_url_display))?;
+            false
+        } else {
+            debug!("Cached repository is invalid, removing...");
+            fs::remove_dir_all(&repo_dir).with_context(|| {
+                format!("failed to remove invalid cached repository {}", repo_dir.display())
+            })?;
+            true
+        }
+    } else {
+        true
+    };
 
-    run_git_command(&clone_args, None, &[7])
-        .with_context(|| format!("failed to clone {}", repo_url_display))?;
+    if needs_clone {
+        debug!("Cloning repository into cache...");
+        let clone_args = vec![
+            "clone",
+            "--filter=blob:none",
+            "--depth=1",
+            "--branch",
+            request.branch.as_str(),
+            "--single-branch",
+            "--no-checkout",
+            repo_url_string.as_str(),
+            repo_dir_str,
+        ];
+
+        run_git_command(&clone_args, None, &[7])
+            .with_context(|| format!("failed to clone {}", repo_url_display))?;
+    }
 
     let sparse_checkout_needed = !request.path.is_empty() || request.kind == RequestKind::Blob;
     if sparse_checkout_needed {
@@ -130,6 +169,10 @@ fn download_via_git_blocking(
             }
         ));
     }
+
+    // Check for file overwrites before proceeding
+    let target_paths = crate::overwrite::collect_target_paths(&tasks);
+    crate::overwrite::check_overwrite_permission(&target_paths, force)?;
 
     let total_files = tasks.len();
     let total_bytes: u64 = tasks.iter().filter_map(|task| task.size).sum();
