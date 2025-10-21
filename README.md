@@ -17,17 +17,17 @@ Download and install the latest release using the install script:
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.sh | bash
 ```
 
 Or with options:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash -s -- --prefix ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.sh | bash -s -- --prefix ~/.local/bin
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/scripts/install.ps1 | iex
 ```
 
 The install scripts download pre-built binaries from GitHub releases. Available options:
@@ -106,6 +106,10 @@ cargo fmt
 cargo clippy --all-features -- -D warnings
 cargo test
 ```
+
+### Cutting a release
+
+Follow the step-by-step guide in [`docs/release.md`](docs/release.md) to prepare and publish a new tagged release.
 
 ### Nix workflow
 

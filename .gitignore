@@ -10,3 +10,13 @@
 
 # macOS
 .DS_Store
+
+/CLAUDE.md
+/.claude
+
+# Nixos
+/result
+
+# direnv
+.envrc
+.direnv/
