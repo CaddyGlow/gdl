@@ -1,20 +1,20 @@
 [package]
-name = "github-dl"
+name = "ghdl"
 version = "0.1.0"
 edition = "2024"
 authors = ["CaddyGlow"]
 description = "CLI for downloading files or directories from GitHub repositories using the REST API"
-documentation = "https://github.com/CaddyGlow/github-dl#readme"
+documentation = "https://github.com/CaddyGlow/ghdl#readme"
 readme = "README.md"
-homepage = "https://github.com/CaddyGlow/github-dl"
-repository = "https://github.com/CaddyGlow/github-dl"
+homepage = "https://github.com/CaddyGlow/ghdl"
+repository = "https://github.com/CaddyGlow/ghdl"
 license = "MIT"
 keywords = ["github", "download", "git", "cli", "rest-api"]
 categories = ["command-line-utilities", "development-tools"]
 build = "build.rs"
 
 [[bin]]
-name = "gdl"
+name = "ghdl"
 path = "src/main.rs"
 
 [package.metadata.binstall]

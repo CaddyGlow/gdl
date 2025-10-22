@@ -128,7 +128,7 @@ jobs:
       - name: Package artifact
         run: |
           mkdir -p dist
-          BIN="gdl"
+          BIN="ghdl"
           TARGET="${{ matrix.target }}"
           VERSION="${{ github.ref_name }}"
           if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
@@ -146,7 +146,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gdl-${{ matrix.target }}
+          name: ghdl-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip

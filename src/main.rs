@@ -71,7 +71,7 @@ fn main() -> Result<()> {
 
     if api_rate {
         let client = Client::builder()
-            .user_agent("gdl-rs (https://github.com/CaddyGlow/github-dl)")
+            .user_agent("ghdl-rs (https://github.com/CaddyGlow/ghdl)")
             .build()
             .context("failed to construct HTTP client")?;
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -83,7 +83,7 @@ fn main() -> Result<()> {
     }
 
     let client = Client::builder()
-        .user_agent("gdl-rs (https://github.com/CaddyGlow/github-dl)")
+        .user_agent("ghdl-rs (https://github.com/CaddyGlow/ghdl)")
         .build()
         .context("failed to construct HTTP client")?;
     let rate_limit = Arc::new(RateLimitTracker::default());

@@ -1,6 +1,6 @@
 # Testing Methodology
 
-This document describes the testing philosophy and practices used in the `gdl` project to achieve **high code coverage with minimal test maintenance burden**.
+This document describes the testing philosophy and practices used in the `ghdl` project to achieve **high code coverage with minimal test maintenance burden**.
 
 ## Philosophy: Test What Matters
 

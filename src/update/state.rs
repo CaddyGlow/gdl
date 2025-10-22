@@ -34,7 +34,7 @@ pub fn update_state_path() -> Result<PathBuf> {
             anyhow!("Unable to determine cache directory (set XDG_CACHE_HOME or HOME)")
         })?;
 
-    let dir = base.join("gdl");
+    let dir = base.join("ghdl");
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
     Ok(dir.join("update_state.json"))

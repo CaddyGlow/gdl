@@ -20,17 +20,17 @@ Download and install the latest release using the install script:
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/ghdl/main/install.sh | bash
 ```
 
 Or with options:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.sh | bash -s -- --prefix ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/ghdl/main/install.sh | bash -s -- --prefix ~/.local/bin
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/CaddyGlow/ghdl/main/install.ps1 | iex
 ```
 
 The install scripts download pre-built binaries from GitHub releases. Available options:
@@ -41,25 +41,25 @@ The install scripts download pre-built binaries from GitHub releases. Available 
 
 ### Install from crates.io
 ```bash
-cargo install github-dl
+cargo install ghdl
 ```
 
 ### Install from Git
 ```bash
-cargo install --git https://github.com/CaddyGlow/github-dl
+cargo install --git https://github.com/CaddyGlow/ghdl
 ```
 
 ### Build from a local checkout
 ```bash
-git clone https://github.com/CaddyGlow/github-dl.git
-cd github-dl
+git clone https://github.com/CaddyGlow/ghdl.git
+cd ghdl
 cargo install --path .
 ```
 
 Alternatively, build the binary directly:
 ```bash
 cargo build --release
-# resulting binary at target/release/gdl
+# resulting binary at target/release/ghdl
 ```
 
 ## Usage
@@ -71,7 +71,7 @@ gdl https://github.com/owner/repo/tree/main/path/to/dir
 ```
 
 Optional flags:
-- `-o, --output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
+- `-o, --output <path>` – destination directory for the downloaded files. When omitted, `ghdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
 - `-p, --parallel <N>` – maximum number of files to download concurrently (default: 4).
 - `-s, --strategy <STRATEGY>` – preferred download strategy (default: `auto`):
   - `api` – use GitHub REST API exclusively
@@ -83,9 +83,9 @@ Optional flags:
       - For whole repository: tries zip → API
       - For specific paths: tries API → zip
 - `-f, --force` – force overwrite existing files without prompting.
-- `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
+- `--token <token>` – GitHub personal access token. If not supplied, `ghdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
 - `--api-rate` – display GitHub API rate limit information and exit.
-- `--self-update` – replace the current `gdl` binary with the latest GitHub release and exit. Honors `--token`/`GITHUB_TOKEN`/`GH_TOKEN` for private repositories.
+- `--self-update` – replace the current `ghdl` binary with the latest GitHub release and exit. Honors `--token`/`GITHUB_TOKEN`/`GH_TOKEN` for private repositories.
 - `--check-update` – report whether a newer release is available without downloading it.
 - `--clear-cache` – clear all cached data and exit.
 - `--no-cache` – disable HTTP response caching and download resume for this run.
@@ -111,12 +111,12 @@ gdl https://github.com/owner/repo/tree/main/examples --output ./examples
 
 Check for updates without downloading anything:
 ```bash
-gdl --check-update
+ghdl --check-update
 ```
 
 Check your GitHub API rate limit:
 ```bash
-gdl --api-rate
+ghdl --api-rate
 ```
 
 Download from a private repository using a token:
@@ -135,8 +135,8 @@ gdl https://github.com/owner/private-repo/tree/main/config
 
 Logging levels can be adjusted with `RUST_LOG`:
 ```bash
-gdl -v https://github.com/owner/repo/tree/main/src
-RUST_LOG=trace gdl -vv https://github.com/owner/repo/tree/main/src
+ghdl -v https://github.com/owner/repo/tree/main/src
+RUST_LOG=trace ghdl -vv https://github.com/owner/repo/tree/main/src
 ```
 
 ## Development

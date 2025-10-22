@@ -723,7 +723,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "github-dl"
+name = "ghdl"
 version = "0.1.0"
 dependencies = [
  "anyhow",

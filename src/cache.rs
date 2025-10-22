@@ -42,7 +42,7 @@ fn cache_base_dir() -> Result<PathBuf> {
             anyhow!("Unable to determine cache directory (set XDG_CACHE_HOME or HOME)")
         })?;
 
-    Ok(base.join("gdl"))
+    Ok(base.join("ghdl"))
 }
 
 pub fn responses_cache_dir() -> Result<PathBuf> {
@@ -203,7 +203,7 @@ mod tests {
     use std::env;
 
     fn setup_test_cache_dir() -> PathBuf {
-        let test_dir = env::temp_dir().join(format!("gdl_test_{}", std::process::id()));
+        let test_dir = env::temp_dir().join(format!("ghdl_test_{}", std::process::id()));
         unsafe {
             env::set_var("XDG_CACHE_HOME", &test_dir);
         }
@@ -311,7 +311,7 @@ mod tests {
 
         let cache_dir = responses_cache_dir().expect("Failed to get cache dir");
         assert!(cache_dir.exists(), "Cache directory should be created");
-        assert!(cache_dir.ends_with("gdl/responses"));
+        assert!(cache_dir.ends_with("ghdl/responses"));
 
         cleanup_test_cache_dir(test_dir);
     }
@@ -326,7 +326,7 @@ mod tests {
             cache_dir.exists(),
             "Downloads cache directory should be created"
         );
-        assert!(cache_dir.ends_with("gdl/downloads"));
+        assert!(cache_dir.ends_with("ghdl/downloads"));
 
         cleanup_test_cache_dir(test_dir);
     }
@@ -341,7 +341,7 @@ mod tests {
             cache_dir.exists(),
             "Repos cache directory should be created"
         );
-        assert!(cache_dir.ends_with("gdl/repos"));
+        assert!(cache_dir.ends_with("ghdl/repos"));
 
         cleanup_test_cache_dir(test_dir);
     }

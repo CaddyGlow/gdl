@@ -46,8 +46,8 @@ fn main() {
 
     let long_version = long_lines.join("\n");
 
-    println!("cargo:rustc-env=GDL_VERSION={version}");
-    println!("cargo:rustc-env=GDL_LONG_VERSION={long_version}");
+    println!("cargo:rustc-env=GHDL_VERSION={version}");
+    println!("cargo:rustc-env=GHDL_LONG_VERSION={long_version}");
     println!("cargo:rustc-env=CARGO_PKG_VERSION={pkg_version}");
 }
 

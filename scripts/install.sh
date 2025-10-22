@@ -2,16 +2,16 @@
 set -euo pipefail
 
 OWNER="CaddyGlow"
-REPO="gdl"
+REPO="ghdl"
 API_URL="https://api.github.com/repos/${OWNER}/${REPO}"
-BINARY_NAME="gdl"
+BINARY_NAME="ghdl"
 ARCHIVE_EXT="tar.gz"
 
 usage() {
   cat <<'EOF'
 Usage: install.sh [--prefix DIR] [--tag TAG] [--token TOKEN] [--force]
 
-Downloads the latest gdl release from GitHub and installs the binary for the
+Downloads the latest ghdl release from GitHub and installs the binary for the
 current platform. By default the binary is placed in ~/.local/bin.
 
 Options:
@@ -199,9 +199,9 @@ prompt_overwrite() {
     local existing_clean="${existing_version#v}"
     local latest_clean="${latest_tag#v}"
     if [[ "${existing_clean}" == "${latest_clean}" ]]; then
-      prompt="Reinstall gdl ${latest_tag}? [y/N] "
+      prompt="Reinstall ghdl ${latest_tag}? [y/N] "
     else
-      prompt="Replace gdl ${existing_version} with ${latest_tag}? [y/N] "
+      prompt="Replace ghdl ${existing_version} with ${latest_tag}? [y/N] "
     fi
   fi
 
@@ -226,7 +226,7 @@ check_existing_install() {
     return 0
   fi
 
-  echo "Found existing gdl at ${install_path}"
+  echo "Found existing ghdl at ${install_path}"
   local existing_output existing_line
   existing_output="$("${install_path}" --version 2>/dev/null || true)"
   existing_line="${existing_output%%$'\n'*}"

@@ -79,7 +79,7 @@ function Select-ReleaseAsset {
 }
 
 function New-TemporaryDirectory {
-  $path = Join-Path ([System.IO.Path]::GetTempPath()) ("gdl-" + [Guid]::NewGuid().ToString("N"))
+  $path = Join-Path ([System.IO.Path]::GetTempPath()) ("ghdl-" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $path | Out-Null
   return $path
 }
@@ -89,7 +89,7 @@ function Ensure-PathContainsDestination {
 
   $pathEntries = ($env:PATH -split ';') | Where-Object { $_ }
   if ($pathEntries -notcontains $Destination) {
-    Write-Warning "Add '$Destination' to your PATH to use gdl from any shell."
+    Write-Warning "Add '$Destination' to your PATH to use ghdl from any shell."
   }
 }
 
@@ -107,19 +107,19 @@ function Install-GdlBinary {
 
     Expand-Archive -Path $archivePath -DestinationPath $tempDir -Force -ErrorAction Stop
 
-    $binaryPath = Join-Path $tempDir "gdl.exe"
+    $binaryPath = Join-Path $tempDir "ghdl.exe"
     if (-not (Test-Path -LiteralPath $binaryPath)) {
-      throw "The downloaded archive did not contain gdl.exe."
+      throw "The downloaded archive did not contain ghdl.exe."
     }
 
     if (-not (Test-Path -LiteralPath $Destination)) {
       New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     }
 
-    $installPath = Join-Path $Destination "gdl.exe"
+    $installPath = Join-Path $Destination "ghdl.exe"
     Move-Item -LiteralPath $binaryPath -Destination $installPath -Force
 
-    Write-Host "Installed gdl to $installPath"
+    Write-Host "Installed ghdl to $installPath"
     Ensure-PathContainsDestination -Destination $Destination
   }
   finally {
@@ -133,7 +133,7 @@ Ensure-WindowsPlatform
 Ensure-SupportedArchitecture
 
 $owner = "CaddyGlow"
-$repo = "gdl"
+$repo = "ghdl"
 $target = "x86_64-pc-windows-gnu"
 $apiUrl = "https://api.github.com/repos/$owner/$repo"
 

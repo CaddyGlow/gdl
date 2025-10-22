@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, ValueEnum};
 
-pub const VERSION: &str = env!("GDL_VERSION");
-pub const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
+pub const VERSION: &str = env!("GHDL_VERSION");
+pub const LONG_VERSION: &str = env!("GHDL_LONG_VERSION");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
@@ -20,7 +20,7 @@ pub enum DownloadStrategy {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "gdl",
+    name = "ghdl",
     author,
     version = VERSION,
     long_version = LONG_VERSION,
@@ -35,11 +35,11 @@ pub struct Cli {
     )]
     pub urls: Vec<String>,
 
-    /// Update gdl to the latest release and exit
+    /// Update ghdl to the latest release and exit
     #[arg(long)]
     pub self_update: bool,
 
-    /// Check for a newer gdl release and exit without installing it
+    /// Check for a newer ghdl release and exit without installing it
     #[arg(long)]
     pub check_update: bool,
 
