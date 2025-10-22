@@ -303,27 +303,15 @@ When reviewing test additions, ask:
 
 ## Examples from Codebase
 
-### ✅ Great Example: `download/validation.rs`
-- 4 tests for 25 lines = 100% coverage
-- Tests strategy selection logic (pure function)
-- Consolidates related scenarios
-- Clear test names
+### ✅ Well-Tested: `types.rs`
+- Tests core data structures with trait implementations
+- Covers TargetPath trait for both DownloadTask and FileCopyTask
+- Tests cloning and equality for type safety
 
-```rust
-#[test]
-fn test_validate_download_strategy() {
-    // Auto mode selects based on conditions
-    assert_eq!(validate_download_strategy(DownloadStrategy::Auto, true, ...), DownloadStrategy::Git);
-
-    // Explicit strategies unchanged
-    assert_eq!(validate_download_strategy(DownloadStrategy::Api, ...), DownloadStrategy::Api);
-}
-```
-
-### ✅ Great Example: `http/headers.rs`
-- 6 tests for 36 lines = 100% coverage
-- Tests header parsing (pure function)
-- Groups extraction, validation, and caching logic
+### ✅ Well-Tested: `github/types.rs`
+- Tests JSON deserialization for GitHub API responses
+- Covers all content types (File, Dir, Symlink, Submodule)
+- Tests git tree response parsing
 
 ### ❌ Intentionally NOT Tested: `download/file.rs`
 - 0 tests for 104 lines = 0% coverage
@@ -331,18 +319,23 @@ fn test_validate_download_strategy() {
 - Better tested via integration tests or manual testing
 - Would require complex mocking to unit test
 
+### ❌ Intentionally NOT Tested: `download/manager.rs`
+- Orchestration code that wires components together
+- Async operations with external dependencies
+- Better tested via integration/smoke tests
+
 ## Maintenance
 
-### When Coverage Drops Below 20%
-This likely means someone added pure logic without tests. Review recent changes.
+### When Coverage Drops Below 10%
+This likely means core types or deserializers were added without tests. Review recent changes.
 
-### When Test Count Grows Above 150
+### When Test Count Grows Above 120
 Time to consolidate. Look for:
 - Multiple tests for the same function
 - Tests that can be combined with table-driven approach
 - Redundant edge case testing
 
-### When Tests Become Slow (>2 seconds)
+### When Tests Become Slow (>1 second)
 Tests probably contain I/O. Either:
 - Move to integration test suite
 - Simplify to test pure logic only
@@ -355,13 +348,19 @@ Tests probably contain I/O. Either:
 2. Test I/O sparingly (0-20% coverage)
 3. Consolidate related tests
 4. Focus on behavior over implementation
-5. Keep total test count < 150
+5. Keep total test count reasonable (~80-100)
 
-**Result:**
-- ~20-25% overall coverage
-- ~100-120 unit tests
-- Fast test execution
-- High confidence in critical logic
+**Current State:**
+- ~13-15% overall coverage
+- ~79 unit tests (focused on types, parsing, validation)
+- Fast test execution (< 0.5s)
+- Tests for data structures and deserializers
 - Low maintenance burden
 
-**Remember:** The goal is not maximum coverage - it's maximum confidence with minimum maintenance cost.
+**Remember:** The goal is not maximum coverage - it's maximum confidence with minimum maintenance cost. This project focuses testing on:
+- Core type definitions and traits
+- JSON deserialization for API responses
+- URL parsing and validation
+- Data structure contracts (Clone, PartialEq, etc.)
+
+Infrastructure code (I/O, downloads, git operations, progress bars) is better tested via integration/smoke tests.
