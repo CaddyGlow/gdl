@@ -20,6 +20,7 @@ pub enum DownloadStrategy {
 
 #[derive(Parser, Debug)]
 #[command(
+    name = "gdl",
     author,
     version = VERSION,
     long_version = LONG_VERSION,

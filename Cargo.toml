@@ -1,17 +1,21 @@
 [package]
-name = "gdl"
+name = "github-dl"
 version = "0.1.0"
 edition = "2024"
 authors = ["CaddyGlow"]
 description = "CLI for downloading files or directories from GitHub repositories using the REST API"
-documentation = "https://github.com/CaddyGlow/gdl#readme"
+documentation = "https://github.com/CaddyGlow/github-dl#readme"
 readme = "README.md"
-homepage = "https://github.com/CaddyGlow/gdl"
-repository = "https://github.com/CaddyGlow/gdl"
+homepage = "https://github.com/CaddyGlow/github-dl"
+repository = "https://github.com/CaddyGlow/github-dl"
 license = "MIT"
 keywords = ["github", "download", "git", "cli", "rest-api"]
 categories = ["command-line-utilities", "development-tools"]
 build = "build.rs"
+
+[[bin]]
+name = "gdl"
+path = "src/main.rs"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"

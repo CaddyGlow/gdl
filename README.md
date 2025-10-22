@@ -20,17 +20,17 @@ Download and install the latest release using the install script:
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.sh | bash
 ```
 
 Or with options:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.sh | bash -s -- --prefix ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.sh | bash -s -- --prefix ~/.local/bin
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/CaddyGlow/gdl/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/CaddyGlow/github-dl/main/install.ps1 | iex
 ```
 
 The install scripts download pre-built binaries from GitHub releases. Available options:
@@ -39,15 +39,20 @@ The install scripts download pre-built binaries from GitHub releases. Available 
 - `--token TOKEN` – GitHub token to avoid rate limits
 - `--force` – overwrite existing installation without prompting
 
+### Install from crates.io
+```bash
+cargo install github-dl
+```
+
 ### Install from Git
 ```bash
-cargo install --git https://github.com/CaddyGlow/gdl gdl
+cargo install --git https://github.com/CaddyGlow/github-dl
 ```
 
 ### Build from a local checkout
 ```bash
-git clone https://github.com/CaddyGlow/gdl.git
-cd gdl
+git clone https://github.com/CaddyGlow/github-dl.git
+cd github-dl
 cargo install --path .
 ```
 

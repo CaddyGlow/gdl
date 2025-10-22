@@ -686,35 +686,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gdl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "atty",
- "clap",
- "console 0.16.1",
- "env_logger",
- "futures",
- "indicatif 0.18.1",
- "indicatif-log-bridge",
- "log",
- "predicates",
- "regex",
- "reqwest",
- "self_update",
- "serde",
- "serde_json",
- "serial_test",
- "sha1",
- "sha2",
- "tempfile",
- "tokio",
- "url",
- "zip 6.0.0",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -749,6 +720,35 @@ dependencies = [
  "r-efi",
  "wasip2",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "github-dl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "atty",
+ "clap",
+ "console 0.16.1",
+ "env_logger",
+ "futures",
+ "indicatif 0.18.1",
+ "indicatif-log-bridge",
+ "log",
+ "predicates",
+ "regex",
+ "reqwest",
+ "self_update",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
+ "zip 6.0.0",
 ]
 
 [[package]]

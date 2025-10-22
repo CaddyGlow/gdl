@@ -13,7 +13,7 @@ use super::state::{UpdateDecision, load_update_state, save_update_state, update_
 use crate::utils::{system_time_from_secs, system_time_to_secs};
 
 const GITHUB_OWNER: &str = "CaddyGlow";
-const GITHUB_REPO: &str = "gdl";
+const GITHUB_REPO: &str = "github-dl";
 const BIN_NAME: &str = "gdl";
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60;
 const POSTPONE_DURATION_SECS: u64 = 24 * 60 * 60;
