@@ -1,7 +1,7 @@
 [package]
 name = "gdl"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 authors = ["CaddyGlow"]
 description = "CLI for downloading files or directories from GitHub repositories using the REST API"
 documentation = "https://github.com/CaddyGlow/gdl#readme"
@@ -41,7 +41,11 @@ tokio = { version = "1", features = [
   "sync",
 ] }
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "stream",
+] }
 self_update = { version = "0.42", default-features = false, features = [
   "archive-tar",
   "archive-zip",
