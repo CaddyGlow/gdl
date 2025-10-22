@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use log::info;
+use console::style;
 use reqwest::Client;
 
 mod cache;
@@ -32,7 +32,7 @@ use utils::init_logging;
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let verbose = cli.verbose;
-    init_logging(verbose);
+    let multi_progress = init_logging(verbose);
 
     let Cli {
         urls,
@@ -99,6 +99,7 @@ fn main() -> Result<()> {
                 strategy,
                 no_cache,
                 force,
+                &multi_progress,
             )
             .await?;
         }
@@ -112,6 +113,6 @@ fn main() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    info!("All downloads completed successfully.");
+    eprintln!("\n{} All downloads completed successfully.", style("✓").green().bold());
     Ok(())
 }

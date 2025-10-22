@@ -54,10 +54,11 @@ pub fn check_overwrite_permission(
 }
 
 fn prompt_user_for_overwrite(existing_files: &[&Path]) -> Result<()> {
-    warn!(
-        "The following {} file(s) already exist:",
-        existing_files.len()
-    );
+    // Log warning for tracking
+    warn!("{} existing file(s) will be overwritten if user confirms", existing_files.len());
+
+    // Display prompt to user (not through logger)
+    eprintln!("\n⚠  The following {} file(s) already exist:", existing_files.len());
     for path in existing_files.iter().take(10) {
         eprintln!("  - {}", path.display());
     }

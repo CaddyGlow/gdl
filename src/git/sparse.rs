@@ -2,12 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use console::style;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use sha2::{Digest, Sha256};
 use tokio::task::spawn_blocking;
 
 use crate::cache::repos_cache_dir;
-use crate::git::utils::{ensure_git_available, run_git_command};
+use crate::git::utils::{ensure_git_available, run_git_command, run_git_with_progress};
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
 use crate::progress::{format_bytes, DownloadProgress};
@@ -19,13 +21,15 @@ pub async fn download_via_git(
     output: Option<&PathBuf>,
     token: Option<&str>,
     force: bool,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let request = request.clone();
     let url = url.to_string();
     let output = output.cloned();
     let token = token.map(|t| t.to_string());
+    let multi = multi.clone();
 
-    spawn_blocking(move || download_via_git_blocking(request, url, output, token, force))
+    spawn_blocking(move || download_via_git_blocking(request, url, output, token, force, multi))
         .await
         .map_err(|err| anyhow!("git download task failed: {}", err))??;
     Ok(())
@@ -37,6 +41,7 @@ fn download_via_git_blocking(
     output: Option<PathBuf>,
     token: Option<String>,
     force: bool,
+    multi: MultiProgress,
 ) -> Result<()> {
     ensure_git_available()?;
 
@@ -77,6 +82,13 @@ fn download_via_git_blocking(
         .to_str()
         .ok_or_else(|| anyhow!("cache directory path contains invalid UTF-8"))?;
 
+    // Show stage indicator for git operations
+    eprintln!(
+        "{} {} Preparing repository...",
+        style("[1/2]").bold().dim(),
+        style("⟳").cyan()
+    );
+
     // Check if repo already exists and is valid
     let needs_clone = if repo_dir.exists() {
         debug!("Found cached repository at {}", repo_dir.display());
@@ -84,13 +96,27 @@ fn download_via_git_blocking(
         let is_valid = run_git_command(&["rev-parse", "--git-dir"], Some(&repo_dir), &[]).is_ok();
         if is_valid {
             debug!("Cached repository is valid, updating...");
+
+            // Show progress bar during fetch
+            let pb = multi.add(ProgressBar::new(100));
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {msg}")
+                    .expect("invalid progress bar template")
+                    .progress_chars("#>-"),
+            );
+            pb.set_message(format!("Fetching updates for {}/{}", request.owner, request.repo));
+
             // Update the repository
-            run_git_command(
-                &["fetch", "--depth=1", "origin", request.branch.as_str()],
+            run_git_with_progress(
+                &["fetch", "--progress", "--depth=1", "origin", request.branch.as_str()],
                 Some(&repo_dir),
                 &[7],
+                &pb,
             )
             .with_context(|| format!("failed to update cached repository {}", repo_url_display))?;
+
+            pb.finish_and_clear();
             false
         } else {
             debug!("Cached repository is invalid, removing...");
@@ -108,8 +134,20 @@ fn download_via_git_blocking(
 
     if needs_clone {
         debug!("Cloning repository into cache...");
+
+        // Show progress bar during clone
+        let pb = multi.add(ProgressBar::new(100));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {msg}")
+                .expect("invalid progress bar template")
+                .progress_chars("#>-"),
+        );
+        pb.set_message(format!("Cloning {}/{}", request.owner, request.repo));
+
         let clone_args = vec![
             "clone",
+            "--progress",
             "--filter=blob:none",
             "--depth=1",
             "--branch",
@@ -120,8 +158,10 @@ fn download_via_git_blocking(
             repo_dir_str,
         ];
 
-        run_git_command(&clone_args, None, &[7])
+        run_git_with_progress(&clone_args, None, &[8], &pb)
             .with_context(|| format!("failed to clone {}", repo_url_display))?;
+
+        pb.finish_and_clear();
     }
 
     let sparse_checkout_needed = !request.path.is_empty() || request.kind == RequestKind::Blob;
@@ -148,12 +188,25 @@ fn download_via_git_blocking(
         .with_context(|| format!("failed to configure sparse checkout for {}", sparse_target))?;
     }
 
-    run_git_command(
+    // Show progress bar during checkout
+    let pb = multi.add(ProgressBar::new(100));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {msg}")
+            .expect("invalid progress bar template")
+            .progress_chars("#>-"),
+    );
+    pb.set_message(format!("Checking out branch {}", request.branch));
+
+    run_git_with_progress(
         &["checkout", "--progress", request.branch.as_str()],
         Some(&repo_dir),
         &[],
+        &pb,
     )
     .with_context(|| format!("failed to checkout branch {}", request.branch))?;
+
+    pb.finish_and_clear();
 
     let treat_as_single_file = request.kind == RequestKind::Blob;
     let (base_path, default_output_dir) =
@@ -179,13 +232,24 @@ fn download_via_git_blocking(
 
     let total_files = tasks.len();
     let total_bytes: u64 = tasks.iter().filter_map(|task| task.size).sum();
-    let mut progress = DownloadProgress::new(total_files, total_bytes);
+
+    let mut progress = DownloadProgress::with_multi_progress(
+        total_files,
+        total_bytes,
+        Some(&multi),
+    );
 
     let target_display = if total_files == 1 && treat_as_single_file {
         format_path_for_log(&tasks[0].target_path)
     } else {
         format_path_for_log(&output_dir)
     };
+
+    eprintln!(
+        "{} {} Copying files...",
+        style("[2/2]").bold().dim(),
+        style("»").cyan()
+    );
 
     info!(
         "Downloading from {}/{}:{}:{} into {} (git sparse checkout)",

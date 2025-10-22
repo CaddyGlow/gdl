@@ -17,6 +17,7 @@ pub struct DownloadProgress {
 
 impl DownloadProgress {
     /// Create a new progress tracker with visual progress bars
+    #[allow(dead_code)]
     pub fn new(total_files: usize, total_bytes: u64) -> Self {
         Self::with_multi_progress(total_files, total_bytes, None)
     }
@@ -33,7 +34,7 @@ impl DownloadProgress {
             file_pb.set_style(
                 ProgressStyle::default_bar()
                     .template(
-                        "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)",
+                        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%)",
                     )
                     .expect("invalid progress bar template")
                     .progress_chars("#>-"),
@@ -44,7 +45,7 @@ impl DownloadProgress {
             byte_pb.set_style(
                 ProgressStyle::default_bar()
                     .template(
-                        "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)",
+                        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)",
                     )
                     .expect("invalid progress bar template")
                     .progress_chars("#>-"),

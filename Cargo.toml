@@ -2,9 +2,27 @@
 name = "gdl"
 version = "0.2.2"
 edition = "2021"
-build = "build.rs"
+authors = ["CaddyGlow"]
+description = "CLI for downloading files or directories from GitHub repositories using the REST API"
+documentation = "https://github.com/CaddyGlow/gdl#readme"
+readme = "README.md"
+homepage = "https://github.com/CaddyGlow/gdl"
 repository = "https://github.com/CaddyGlow/gdl"
 license = "MIT"
+keywords = ["github", "download", "git", "cli", "rest-api"]
+categories = ["command-line-utilities", "development-tools"]
+build = "build.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
+pkg-fmt = "zip"
 
 [dependencies]
 anyhow = "1.0"
@@ -35,7 +53,10 @@ tempfile = "3.23.0"
 sha2 = "0.10"
 sha1 = "0.10"
 indicatif = { version = "0.18.1", features = ["tokio"] }
+indicatif-log-bridge = "0.2"
 zip = "2.2"
+regex = "1.12"
+console = "0.15"
 
 [dev-dependencies]
 assert_cmd = "2.0"

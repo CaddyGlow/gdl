@@ -1,8 +1,11 @@
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use console::style;
+use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
@@ -23,15 +26,17 @@ pub async fn download_via_zip(
     rate_limit: std::sync::Arc<RateLimitTracker>,
     no_cache: bool,
     force: bool,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let request = request.clone();
     let url = url.to_string();
     let output = output.cloned();
     let token = token.map(|t| t.to_string());
     let client = client.clone();
+    let multi = multi.clone();
 
     download_via_zip_impl(
-        client, request, url, output, token, rate_limit, no_cache, force,
+        client, request, url, output, token, rate_limit, no_cache, force, multi,
     )
     .await
 }
@@ -45,6 +50,7 @@ async fn download_via_zip_impl(
     rate_limit: std::sync::Arc<RateLimitTracker>,
     no_cache: bool,
     force: bool,
+    multi: MultiProgress,
 ) -> Result<()> {
     // Construct the zip download URL
     let zip_url = format!(
@@ -66,14 +72,25 @@ async fn download_via_zip_impl(
 
     // Download the zip file if not cached or if cache is disabled
     if !zip_path.exists() || no_cache {
+        eprintln!(
+            "{} {} Downloading zip archive...",
+            style("[1/2]").bold().dim(),
+            style("▼").cyan()
+        );
         debug!("Downloading zip archive to {}", zip_path.display());
-        download_zip_file(&client, &zip_url, &zip_path, token.as_deref(), &rate_limit).await?;
+        download_zip_file(&client, &zip_url, &zip_path, token.as_deref(), &rate_limit, &multi).await?;
     } else {
-        debug!("Using cached zip archive at {}", zip_path.display());
+        eprintln!("{} {} Using cached zip archive", style("[1/2]").bold().dim(), style("✓").green());
+        info!("Using cached zip archive at {}", zip_path.display());
     }
 
     // Extract the specific files from the zip
-    extract_from_zip(&request, &zip_path, output, &url, force)?;
+    eprintln!(
+        "{} {} Extracting files...",
+        style("[2/2]").bold().dim(),
+        style("»").cyan()
+    );
+    extract_from_zip(&request, &zip_path, output, &url, force, &multi)?;
 
     Ok(())
 }
@@ -84,6 +101,7 @@ async fn download_zip_file(
     dest_path: &Path,
     token: Option<&str>,
     rate_limit: &RateLimitTracker,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let mut req = client.get(url);
 
@@ -107,22 +125,50 @@ async fn download_zip_file(
     }
 
     let total_size = response.content_length();
-    if let Some(size) = total_size {
-        debug!("Zip archive size: {}", format_bytes(size));
-    }
+
+    // Create progress bar or spinner for zip download based on whether we know the size
+    let pb = if let Some(size) = total_size {
+        info!("Downloading zip archive: {}", format_bytes(size));
+        let bar = multi.add(ProgressBar::new(size));
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)")
+                .expect("invalid progress bar template")
+                .progress_chars("#>-"),
+        );
+        bar.set_message("Downloading zip archive");
+        bar
+    } else {
+        info!("Downloading zip archive (size unknown)");
+        let spinner = multi.add(ProgressBar::new_spinner());
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg} [{bytes}]")
+                .expect("invalid spinner template"),
+        );
+        spinner.set_message("Downloading zip archive");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        spinner
+    };
 
     // Create temp file and download
     let temp_path = dest_path.with_extension("zip.tmp");
     let mut file = File::create(&temp_path)
         .with_context(|| format!("failed to create temporary file {}", temp_path.display()))?;
 
-    let content = response
-        .bytes()
-        .await
-        .with_context(|| format!("failed to download zip from {}", url))?;
+    // Stream the response and update progress
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
 
-    io::copy(&mut content.as_ref(), &mut file)
-        .with_context(|| format!("failed to write zip data to {}", temp_path.display()))?;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("failed to download chunk from {}", url))?;
+        file.write_all(&chunk)
+            .with_context(|| format!("failed to write to {}", temp_path.display()))?;
+        downloaded += chunk.len() as u64;
+        pb.set_position(downloaded);
+    }
+
+    pb.finish_and_clear();
 
     // Rename temp file to final path
     fs::rename(&temp_path, dest_path).with_context(|| {
@@ -133,7 +179,7 @@ async fn download_zip_file(
         )
     })?;
 
-    debug!("Downloaded zip archive to {}", dest_path.display());
+    info!("Downloaded zip archive: {}", format_bytes(downloaded));
     Ok(())
 }
 
@@ -143,6 +189,7 @@ fn extract_from_zip(
     output: Option<PathBuf>,
     url: &str,
     force: bool,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let file = File::open(zip_path)
         .with_context(|| format!("failed to open zip file {}", zip_path.display()))?;
@@ -242,7 +289,12 @@ fn extract_from_zip(
     crate::overwrite::check_overwrite_permission(&target_paths, force)?;
 
     let total_files = tasks.len();
-    let mut progress = DownloadProgress::new(total_files, total_bytes);
+
+    let mut progress = DownloadProgress::with_multi_progress(
+        total_files,
+        total_bytes,
+        Some(multi),
+    );
 
     let target_display = if total_files == 1 && treat_as_single_file {
         format_path_for_log(&tasks[0].target_path)

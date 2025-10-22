@@ -30,6 +30,7 @@ pub async fn download_github_path(
     strategy: DownloadStrategy,
     no_cache: bool,
     force: bool,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let request = parse_github_url(url)?;
     log::debug!("Parsed request info: {:?}", request);
@@ -47,12 +48,13 @@ pub async fn download_github_path(
                 Arc::clone(&rate_limit),
                 no_cache,
                 force,
+                multi,
             )
             .await
         }
         DownloadStrategy::Git => {
             ensure_git_available()?;
-            download_via_git(&request, url, output, token, force).await
+            download_via_git(&request, url, output, token, force, multi).await
         }
         DownloadStrategy::Zip => {
             download_via_zip(
@@ -64,6 +66,7 @@ pub async fn download_github_path(
                 Arc::clone(&rate_limit),
                 no_cache,
                 force,
+                multi,
             )
             .await
         }
@@ -78,6 +81,7 @@ pub async fn download_github_path(
                 Arc::clone(&rate_limit),
                 no_cache,
                 force,
+                multi,
             )
             .await
             {
@@ -97,6 +101,7 @@ pub async fn download_github_path(
                         Arc::clone(&rate_limit),
                         no_cache,
                         force,
+                        multi,
                     )
                     .await
                     {
@@ -108,7 +113,7 @@ pub async fn download_github_path(
                                     "Zip download failed ({}); attempting git sparse checkout...",
                                     zip_err
                                 );
-                                match download_via_git(&request, url, output, token, force).await {
+                                match download_via_git(&request, url, output, token, force, multi).await {
                                     Ok(()) => Ok(()),
                                     Err(git_err) => Err(api_err.context(format!(
                                         "zip fallback failed: {}; git fallback also failed: {}",
@@ -146,6 +151,7 @@ async fn download_via_rest(
     rate_limit: Arc<RateLimitTracker>,
     no_cache: bool,
     force: bool,
+    multi: &MultiProgress,
 ) -> Result<()> {
     let contents = fetch_github_contents(
         client,
@@ -223,11 +229,10 @@ async fn download_via_rest(
     let target_paths = collect_target_paths(&download_tasks);
     check_overwrite_permission(&target_paths, force)?;
 
-    let multi = MultiProgress::new();
     let progress = Arc::new(Mutex::new(DownloadProgress::with_multi_progress(
         total_files,
         total_bytes,
-        Some(&multi),
+        Some(multi),
     )));
 
     log::debug!(

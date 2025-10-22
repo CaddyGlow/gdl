@@ -50,7 +50,7 @@ pub struct Cli {
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Increase logging verbosity (-v for debug, -vv for trace)
+    /// Increase logging verbosity (-v for info, -vv for debug, -vvv for trace)
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
     pub verbose: u8,
 
