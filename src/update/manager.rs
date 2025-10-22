@@ -101,97 +101,106 @@ fn skip_self_update() -> bool {
     env::var("GDL_SKIP_SELF_UPDATE").is_ok()
 }
 
-pub fn auto_check_for_updates(token: Option<&str>) -> Result<()> {
-    if skip_self_update() {
-        return Ok(());
-    }
+pub async fn auto_check_for_updates(token: Option<&str>) -> Result<()> {
+    // Run the blocking self_update operations in a background thread
+    let token_owned = token.map(|s| s.to_string());
 
-    let state_path = update_state_path()?;
-    let mut state = load_update_state(&state_path)?;
-    let now = SystemTime::now();
+    tokio::task::spawn_blocking(move || {
+        let token_ref = token_owned.as_deref();
 
-    if let Some(postpone_until_secs) = state.postpone_until {
-        let postpone_until = system_time_from_secs(postpone_until_secs);
-        if postpone_until > now {
-            debug!(
-                "Skipping update check because it was postponed until {:?}",
-                postpone_until
-            );
+        if skip_self_update() {
             return Ok(());
         }
-        state.postpone_until = None;
-    }
 
-    if let Some(last_check_secs) = state.last_check {
-        let last_check = system_time_from_secs(last_check_secs);
-        let elapsed = match now.duration_since(last_check) {
-            Ok(duration) => duration,
-            Err(_) => Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS),
-        };
+        let state_path = update_state_path()?;
+        let mut state = load_update_state(&state_path)?;
+        let now = SystemTime::now();
 
-        if elapsed < Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS) {
-            debug!(
-                "Skipping update check; last check was {:?} seconds ago",
-                elapsed.as_secs()
-            );
+        if let Some(postpone_until_secs) = state.postpone_until {
+            let postpone_until = system_time_from_secs(postpone_until_secs);
+            if postpone_until > now {
+                debug!(
+                    "Skipping update check because it was postponed until {:?}",
+                    postpone_until
+                );
+                return Ok(());
+            }
+            state.postpone_until = None;
+        }
+
+        if let Some(last_check_secs) = state.last_check {
+            let last_check = system_time_from_secs(last_check_secs);
+            let elapsed = match now.duration_since(last_check) {
+                Ok(duration) => duration,
+                Err(_) => Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS),
+            };
+
+            if elapsed < Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS) {
+                debug!(
+                    "Skipping update check; last check was {:?} seconds ago",
+                    elapsed.as_secs()
+                );
+                return Ok(());
+            }
+        }
+
+        let updater = build_updater(token_ref)?;
+        let latest = updater
+            .get_latest_release()
+            .context("failed to fetch latest gdl release information")?;
+        let current_version = updater.current_version();
+        let now_secs = system_time_to_secs(now);
+
+        let is_newer = version::bump_is_greater(&current_version, &latest.version)
+            .context("failed to compare semantic versions")?;
+
+        if !is_newer {
+            state.last_check = Some(now_secs);
+            state.postpone_until = None;
+            save_update_state(&state_path, &state)?;
             return Ok(());
         }
-    }
 
-    let updater = build_updater(token)?;
-    let latest = updater
-        .get_latest_release()
-        .context("failed to fetch latest gdl release information")?;
-    let current_version = updater.current_version();
-    let now_secs = system_time_to_secs(now);
+        if !atty::is(atty::Stream::Stdin) || !atty::is(atty::Stream::Stdout) {
+            info!(
+                "A newer gdl release is available: {} (current: {}), but cannot prompt in non-interactive mode",
+                latest.version, current_version
+            );
+            state.last_check = Some(now_secs);
+            state.postpone_until = None;
+            save_update_state(&state_path, &state)?;
+            return Ok(());
+        }
 
-    let is_newer = version::bump_is_greater(&current_version, &latest.version)
-        .context("failed to compare semantic versions")?;
-
-    if !is_newer {
-        state.last_check = Some(now_secs);
-        state.postpone_until = None;
-        save_update_state(&state_path, &state)?;
-        return Ok(());
-    }
-
-    if !atty::is(atty::Stream::Stdin) || !atty::is(atty::Stream::Stdout) {
-        info!(
-            "A newer gdl release is available: {} (current: {}), but cannot prompt in non-interactive mode",
+        println!(
+            "A newer gdl release is available: {} (current: {}).",
             latest.version, current_version
         );
-        state.last_check = Some(now_secs);
-        state.postpone_until = None;
-        save_update_state(&state_path, &state)?;
-        return Ok(());
-    }
 
-    println!(
-        "A newer gdl release is available: {} (current: {}).",
-        latest.version, current_version
-    );
+        let decision = prompt_for_update()?;
 
-    let decision = prompt_for_update()?;
-
-    match decision {
-        UpdateDecision::UpdateNow => {
-            state.last_check = Some(now_secs);
-            state.postpone_until = None;
-            save_update_state(&state_path, &state)?;
-            run_self_update(token)?;
+        match decision {
+            UpdateDecision::UpdateNow => {
+                state.last_check = Some(now_secs);
+                state.postpone_until = None;
+                save_update_state(&state_path, &state)?;
+                run_self_update(token_ref)?;
+            }
+            UpdateDecision::Postpone => {
+                state.last_check = Some(now_secs);
+                state.postpone_until = Some(now_secs + POSTPONE_DURATION_SECS);
+                save_update_state(&state_path, &state)?;
+                info!("Postponed update check for 24 hours.");
+            }
+            UpdateDecision::Discard => {
+                state.last_check = Some(now_secs);
+                state.postpone_until = None;
+                save_update_state(&state_path, &state)?;
+            }
         }
-        UpdateDecision::Postpone => {
-            state.last_check = Some(now_secs);
-            state.postpone_until = Some(now_secs + POSTPONE_DURATION_SECS);
-            save_update_state(&state_path, &state)?;
-            info!("Postponed update check for 24 hours.");
-        }
-        UpdateDecision::Discard => {
-            state.last_check = Some(now_secs);
-            state.postpone_until = None;
-            save_update_state(&state_path, &state)?;
-        }
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .context("update check task panicked")?
 }

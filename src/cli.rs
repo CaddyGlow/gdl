@@ -43,7 +43,7 @@ pub struct Cli {
     pub check_update: bool,
 
     /// Output directory to place the downloaded files (defaults depend on the request)
-    #[arg(long)]
+    #[arg(short = 'o', long)]
     pub output: Option<PathBuf>,
 
     /// GitHub personal access token (falls back to GITHUB_TOKEN or GH_TOKEN env vars)
@@ -55,11 +55,11 @@ pub struct Cli {
     pub verbose: u8,
 
     /// Maximum number of files to download concurrently
-    #[arg(long, value_name = "N", default_value_t = 4)]
+    #[arg(short = 'p', long, value_name = "N", default_value_t = 4)]
     pub parallel: usize,
 
     /// Preferred download strategy (`api`, `git`, or `auto`)
-    #[arg(long, value_enum, default_value_t = DownloadStrategy::Auto)]
+    #[arg(short = 's', long, value_enum, default_value_t = DownloadStrategy::Auto)]
     pub strategy: DownloadStrategy,
 
     /// Disable HTTP response caching and download resume

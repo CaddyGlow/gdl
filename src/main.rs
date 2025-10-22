@@ -67,8 +67,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    auto_check_for_updates(token.as_deref())?;
-
     let client = Client::builder()
         .user_agent("gdl-rs (https://github.com/CaddyGlow/gdl)")
         .build()
@@ -81,6 +79,14 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .context("failed to build async runtime")?;
+
+    // Spawn update check in background - don't block startup
+    let token_for_update = token.clone();
+    runtime.spawn(async move {
+        if let Err(e) = auto_check_for_updates(token_for_update.as_deref()).await {
+            log::debug!("Update check failed: {}", e);
+        }
+    });
 
     let rate_limit_for_runtime = Arc::clone(&rate_limit);
 
