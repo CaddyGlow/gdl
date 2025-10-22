@@ -220,4 +220,141 @@ mod tests {
             .to_string()
             .contains("refusing to write outside the output directory"));
     }
+
+    #[test]
+    fn test_format_path_for_log_absolute() {
+        let path = Path::new("/home/user/file.txt");
+        assert_eq!(format_path_for_log(path), "/home/user/file.txt");
+    }
+
+    #[test]
+    fn test_format_path_for_log_relative() {
+        let path = Path::new("file.txt");
+        assert_eq!(format_path_for_log(path), "./file.txt");
+    }
+
+    #[test]
+    fn test_format_path_for_log_current_dir() {
+        let path = Path::new("./file.txt");
+        assert_eq!(format_path_for_log(path), "./file.txt");
+    }
+
+    #[test]
+    fn test_format_path_for_log_parent_dir() {
+        let path = Path::new("../file.txt");
+        assert_eq!(format_path_for_log(path), "../file.txt");
+    }
+
+    #[test]
+    fn test_compute_base_and_default_output_single_file() {
+        let request = RequestInfo {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            branch: "main".into(),
+            path: "path/to/file.txt".into(),
+            has_trailing_slash: false,
+            kind: RequestKind::Blob,
+        };
+        let (base, output) = compute_base_and_default_output(&request, true, Some("path/to/file.txt"));
+        assert_eq!(base, PathBuf::from("path/to"));
+        assert_eq!(output, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_compute_base_and_default_output_directory() {
+        let request = RequestInfo {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            branch: "main".into(),
+            path: "path/to/dir".into(),
+            has_trailing_slash: false,
+            kind: RequestKind::Tree,
+        };
+        let (base, output) = compute_base_and_default_output(&request, false, None);
+        assert_eq!(base, PathBuf::from("path/to/dir"));
+        assert_eq!(output, PathBuf::from("dir"));
+    }
+
+    #[test]
+    fn test_compute_base_and_default_output_directory_with_trailing_slash() {
+        let request = RequestInfo {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            branch: "main".into(),
+            path: "path/to/dir".into(),
+            has_trailing_slash: true,
+            kind: RequestKind::Tree,
+        };
+        let (base, output) = compute_base_and_default_output(&request, false, None);
+        assert_eq!(base, PathBuf::from("path/to/dir"));
+        assert_eq!(output, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_compute_base_and_default_output_root() {
+        let request = RequestInfo {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            branch: "main".into(),
+            path: "".into(),
+            has_trailing_slash: false,
+            kind: RequestKind::Tree,
+        };
+        let (base, output) = compute_base_and_default_output(&request, false, None);
+        assert_eq!(base, PathBuf::new());
+        assert_eq!(output, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_relative_path_empty_base() {
+        let base = Path::new("");
+        let item = make_file("file.txt");
+        let relative = relative_path(base, &item).unwrap();
+        assert_eq!(relative, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn test_relative_path_empty_result_uses_name() {
+        let base = Path::new("dir");
+        let mut item = make_file("dir");
+        item.name = "filename.txt".to_string();
+        let relative = relative_path(base, &item).unwrap();
+        assert_eq!(relative, PathBuf::from("filename.txt"));
+    }
+
+    #[test]
+    fn test_relative_path_sanitizes_current_dir() {
+        let base = Path::new("dir");
+        let item = make_file("dir/./file.txt");
+        let relative = relative_path(base, &item).unwrap();
+        assert_eq!(relative, PathBuf::from("file.txt"));
+    }
+
+    #[test]
+    fn test_normalize_base_empty() {
+        assert_eq!(normalize_base(PathBuf::new()), PathBuf::new());
+    }
+
+    #[test]
+    fn test_normalize_base_non_empty() {
+        assert_eq!(normalize_base(PathBuf::from("dir")), PathBuf::from("dir"));
+    }
+
+    #[test]
+    fn test_describe_download_target_single_file() {
+        let output_dir = Path::new("output");
+        let base_path = Path::new("dir");
+        let contents = vec![make_file("dir/file.txt")];
+        let result = describe_download_target(output_dir, base_path, &contents).unwrap();
+        assert_eq!(result, "./output/file.txt");
+    }
+
+    #[test]
+    fn test_describe_download_target_directory() {
+        let output_dir = Path::new("output");
+        let base_path = Path::new("dir");
+        let contents = vec![make_dir("dir"), make_file("dir/file1.txt"), make_file("dir/file2.txt")];
+        let result = describe_download_target(output_dir, base_path, &contents).unwrap();
+        assert_eq!(result, "./output");
+    }
 }

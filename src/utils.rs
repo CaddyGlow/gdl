@@ -42,3 +42,38 @@ pub fn system_time_to_secs(time: SystemTime) -> u64 {
 pub fn system_time_from_secs(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_time_to_secs() {
+        let time = UNIX_EPOCH + Duration::from_secs(1234567890);
+        assert_eq!(system_time_to_secs(time), 1234567890);
+    }
+
+    #[test]
+    fn test_system_time_to_secs_epoch() {
+        assert_eq!(system_time_to_secs(UNIX_EPOCH), 0);
+    }
+
+    #[test]
+    fn test_system_time_from_secs() {
+        let expected = UNIX_EPOCH + Duration::from_secs(987654321);
+        assert_eq!(system_time_from_secs(987654321), expected);
+    }
+
+    #[test]
+    fn test_system_time_from_secs_zero() {
+        assert_eq!(system_time_from_secs(0), UNIX_EPOCH);
+    }
+
+    #[test]
+    fn test_system_time_roundtrip() {
+        let original_secs = 1609459200u64; // Jan 1, 2021 00:00:00 UTC
+        let time = system_time_from_secs(original_secs);
+        let recovered_secs = system_time_to_secs(time);
+        assert_eq!(recovered_secs, original_secs);
+    }
+}

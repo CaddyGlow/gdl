@@ -455,4 +455,44 @@ mod tests {
             err
         );
     }
+
+    #[test]
+    fn parses_blob_url() {
+        let info = parse_github_url("https://github.com/owner/repo/blob/branch/path/file.txt").unwrap();
+        assert_eq!(info.owner, "owner");
+        assert_eq!(info.repo, "repo");
+        assert_eq!(info.branch, "branch");
+        assert_eq!(info.path, "path/file.txt");
+        assert_eq!(info.kind, RequestKind::Blob);
+    }
+
+    #[test]
+    fn parses_tree_url_with_nested_path() {
+        let info = parse_github_url("https://github.com/rust-lang/rust/tree/master/src/lib").unwrap();
+        assert_eq!(info.owner, "rust-lang");
+        assert_eq!(info.repo, "rust");
+        assert_eq!(info.branch, "master");
+        assert_eq!(info.path, "src/lib");
+        assert_eq!(info.kind, RequestKind::Tree);
+    }
+
+    #[test]
+    fn rejects_url_with_invalid_segment() {
+        let err = parse_github_url("https://github.com/owner/repo/invalid/branch").unwrap_err();
+        assert!(err.to_string().contains("URL must be either"));
+    }
+
+    #[test]
+    fn parses_url_with_single_slash_at_end() {
+        let info = parse_github_url("https://github.com/owner/repo/tree/main/").unwrap();
+        assert_eq!(info.path, "");
+        assert!(info.has_trailing_slash);
+    }
+
+    #[test]
+    fn parses_tree_url_no_trailing_slash() {
+        let info = parse_github_url("https://github.com/owner/repo/tree/dev/src").unwrap();
+        assert_eq!(info.path, "src");
+        assert!(!info.has_trailing_slash);
+    }
 }

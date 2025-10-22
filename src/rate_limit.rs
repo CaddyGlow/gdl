@@ -151,3 +151,190 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
     value.parse::<u64>().ok().map(Duration::from_secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limit_snapshot_from_headers_complete() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
+        headers.insert("x-ratelimit-remaining", "4999".parse().unwrap());
+        headers.insert("x-ratelimit-used", "1".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1234567890".parse().unwrap());
+
+        let snapshot = RateLimitSnapshot::from_headers(&headers).unwrap();
+        assert_eq!(snapshot.limit, Some(5000));
+        assert_eq!(snapshot.remaining, Some(4999));
+        assert_eq!(snapshot.used, Some(1));
+        assert_eq!(snapshot.reset_epoch, Some(1234567890));
+    }
+
+    #[test]
+    fn test_rate_limit_snapshot_from_headers_partial() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "100".parse().unwrap());
+
+        let snapshot = RateLimitSnapshot::from_headers(&headers).unwrap();
+        assert_eq!(snapshot.limit, None);
+        assert_eq!(snapshot.remaining, Some(100));
+        assert_eq!(snapshot.used, None);
+        assert_eq!(snapshot.reset_epoch, None);
+    }
+
+    #[test]
+    fn test_rate_limit_snapshot_from_headers_empty() {
+        let headers = HeaderMap::new();
+        assert!(RateLimitSnapshot::from_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_snapshot_reset_eta_display() {
+        let snapshot = RateLimitSnapshot {
+            limit: Some(5000),
+            remaining: Some(4999),
+            used: Some(1),
+            reset_epoch: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 120,
+            ),
+        };
+        let display = snapshot.reset_eta_display();
+        assert!(display.contains("in"));
+        assert!(display.contains("s"));
+    }
+
+    #[test]
+    fn test_rate_limit_snapshot_reset_eta_display_unknown() {
+        let snapshot = RateLimitSnapshot {
+            limit: Some(5000),
+            remaining: Some(4999),
+            used: Some(1),
+            reset_epoch: None,
+        };
+        assert_eq!(snapshot.reset_eta_display(), "at an unknown time");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_tracker_record_headers() {
+        let tracker = RateLimitTracker::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
+        headers.insert("x-ratelimit-remaining", "4999".parse().unwrap());
+        headers.insert("x-ratelimit-used", "1".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1234567890".parse().unwrap());
+
+        let result = tracker.record_headers(&headers).await.unwrap();
+        let (snapshot, log_change, warn_low) = result;
+
+        assert_eq!(snapshot.limit, Some(5000));
+        assert_eq!(snapshot.remaining, Some(4999));
+        assert!(log_change); // First time should log
+        assert!(!warn_low); // Not low yet
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_tracker_warns_when_low() {
+        let tracker = RateLimitTracker::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
+        headers.insert("x-ratelimit-remaining", "50".parse().unwrap());
+        headers.insert("x-ratelimit-used", "4950".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1234567890".parse().unwrap());
+
+        let result = tracker.record_headers(&headers).await.unwrap();
+        let (_, _, warn_low) = result;
+
+        assert!(warn_low); // Should warn when at or below threshold
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_tracker_no_duplicate_warnings() {
+        let tracker = RateLimitTracker::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
+        headers.insert("x-ratelimit-remaining", "50".parse().unwrap());
+        headers.insert("x-ratelimit-used", "4950".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1234567890".parse().unwrap());
+
+        // First time should warn
+        let result1 = tracker.record_headers(&headers).await.unwrap();
+        assert!(result1.2);
+
+        // Second time with same remaining should NOT warn
+        let result2 = tracker.record_headers(&headers).await.unwrap();
+        assert!(!result2.2);
+    }
+
+    #[test]
+    fn test_backoff_duration_too_many_requests() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "60".parse().unwrap());
+
+        let duration = RateLimitTracker::backoff_duration(StatusCode::TOO_MANY_REQUESTS, &headers);
+        assert_eq!(duration, Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_backoff_duration_forbidden_with_zero_remaining() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("retry-after", "30".parse().unwrap());
+
+        let duration = RateLimitTracker::backoff_duration(StatusCode::FORBIDDEN, &headers);
+        assert_eq!(duration, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_backoff_duration_forbidden_with_remaining() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "100".parse().unwrap());
+
+        let duration = RateLimitTracker::backoff_duration(StatusCode::FORBIDDEN, &headers);
+        assert_eq!(duration, None);
+    }
+
+    #[test]
+    fn test_backoff_duration_success_status() {
+        let headers = HeaderMap::new();
+        let duration = RateLimitTracker::backoff_duration(StatusCode::OK, &headers);
+        assert_eq!(duration, None);
+    }
+
+    #[test]
+    fn test_header_value_to_u64_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-test", "12345".parse().unwrap());
+        assert_eq!(header_value_to_u64(&headers, "x-test"), Some(12345));
+    }
+
+    #[test]
+    fn test_header_value_to_u64_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-test", "not-a-number".parse().unwrap());
+        assert_eq!(header_value_to_u64(&headers, "x-test"), None);
+    }
+
+    #[test]
+    fn test_header_value_to_u64_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(header_value_to_u64(&headers, "x-missing"), None);
+    }
+
+    #[test]
+    fn test_parse_retry_after_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn test_parse_retry_after_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None);
+    }
+}
