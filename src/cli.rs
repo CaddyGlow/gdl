@@ -6,7 +6,7 @@ pub const VERSION: &str = env!("GDL_VERSION");
 pub const LONG_VERSION: &str = env!("GDL_LONG_VERSION");
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
 pub enum DownloadStrategy {
     /// Use the GitHub REST API for downloads.
     Api,
@@ -14,7 +14,7 @@ pub enum DownloadStrategy {
     Git,
     /// Download repository zip archive and extract specific files.
     Zip,
-    /// Try the REST API first, then fall back to zip or git if needed.
+    /// Intelligent fallback: git→zip→API (if git available), or zip→API / API→zip based on request type.
     Auto,
 }
 

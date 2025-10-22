@@ -1,12 +1,14 @@
+pub mod headers;
+
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, warn};
-use reqwest::header::{ETAG, LAST_MODIFIED};
 use reqwest::StatusCode;
+use reqwest::header::{ETAG, LAST_MODIFIED};
 use tokio::time::sleep;
 
-use crate::cache::{load_cached_response, save_cached_response, CachedResponse};
+use crate::cache::{CachedResponse, load_cached_response, save_cached_response};
 use crate::rate_limit::RateLimitTracker;
 use crate::utils::system_time_to_secs;
 

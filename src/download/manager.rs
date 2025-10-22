@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use indicatif::MultiProgress;
 use log::{info, warn};
@@ -12,10 +12,12 @@ use tokio::sync::Mutex;
 use crate::cli::DownloadStrategy;
 use crate::download::{collect_download_tasks, download_file};
 use crate::git::{download_via_git, ensure_git_available, git_available};
-use crate::github::{build_file_inventory, fetch_github_contents, fetch_repository_info, parse_github_url};
+use crate::github::{
+    build_file_inventory, fetch_github_contents, fetch_repository_info, parse_github_url,
+};
 use crate::overwrite::{check_overwrite_permission, collect_target_paths};
 use crate::paths::{describe_download_target, determine_paths, ensure_directory};
-use crate::progress::{format_bytes, DownloadProgress};
+use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{DownloadTask, RequestInfo};
 use crate::zip::download_via_zip;
@@ -37,7 +39,11 @@ pub async fn download_github_path(
 
     // If branch is empty, we need to fetch the default branch
     if request.branch.is_empty() {
-        log::debug!("Fetching default branch for {}/{}", request.owner, request.repo);
+        log::debug!(
+            "Fetching default branch for {}/{}",
+            request.owner,
+            request.repo
+        );
         let repo_info = fetch_repository_info(client, &request.owner, &request.repo, token)
             .await
             .context("failed to fetch repository information")?;
@@ -174,8 +180,10 @@ pub async fn download_github_path(
                             .await
                             {
                                 Ok(()) => Ok(()),
-                                Err(api_err) => Err(zip_err
-                                    .context(format!("REST API fallback also failed: {}", api_err))),
+                                Err(api_err) => Err(zip_err.context(format!(
+                                    "REST API fallback also failed: {}",
+                                    api_err
+                                ))),
                             }
                         }
                     }

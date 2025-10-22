@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use indicatif::ProgressBar;
 use regex::Regex;
 
@@ -141,7 +141,8 @@ fn parse_git_progress<R: BufRead>(reader: R, progress_bar: &ProgressBar) -> Vec<
     // Regex patterns for different git progress messages
     let enumerating_re = Regex::new(r"remote: Enumerating objects: (\d+)").unwrap();
     let counting_re = Regex::new(r"remote: Counting objects:\s+(\d+)% \((\d+)/(\d+)\)").unwrap();
-    let compressing_re = Regex::new(r"remote: Compressing objects:\s+(\d+)% \((\d+)/(\d+)\)").unwrap();
+    let compressing_re =
+        Regex::new(r"remote: Compressing objects:\s+(\d+)% \((\d+)/(\d+)\)").unwrap();
     let receiving_re = Regex::new(r"Receiving objects:\s+(\d+)% \((\d+)/(\d+)\)").unwrap();
     let resolving_re = Regex::new(r"Resolving deltas:\s+(\d+)% \((\d+)/(\d+)\)").unwrap();
 

@@ -133,6 +133,9 @@ fn main() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    eprintln!("\n{} All downloads completed successfully.", style("✓").green().bold());
+    eprintln!(
+        "\n{} All downloads completed successfully.",
+        style("✓").green().bold()
+    );
     Ok(())
 }

@@ -5,7 +5,10 @@ A fast way to download files or directories from GitHub repositories—paste a G
 ## Features
 - Optimized for copy/paste workflows: drop in a `tree` or `blob` URL while browsing GitHub and fetch the content instantly.
 - Fetches either a single file or entire directory trees while preserving the repository structure locally.
+- Intelligent download strategies: automatically selects the fastest method (git sparse checkout, zip archive, or REST API) based on availability and request type.
+- Smart overwrite protection: prompts before overwriting existing files in interactive mode, fails safely in non-interactive environments.
 - Supports authenticated requests via personal access tokens for private repositories or higher rate limits.
+- HTTP response caching and download resume: speeds up repeated requests and recovers from interrupted downloads.
 - Automatically chooses a sensible default output directory and prevents path traversal outside the target folder.
 - Emits structured logs via `env_logger`, making it easy to inspect progress or troubleshoot failures.
 
@@ -65,7 +68,15 @@ gdl https://github.com/owner/repo/tree/main/path/to/dir
 Optional flags:
 - `-o, --output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
 - `-p, --parallel <N>` – maximum number of files to download concurrently (default: 4).
-- `-s, --strategy <STRATEGY>` – preferred download strategy: `api`, `git`, `zip`, or `auto` (default: `auto`).
+- `-s, --strategy <STRATEGY>` – preferred download strategy (default: `auto`):
+  - `api` – use GitHub REST API exclusively
+  - `git` – use git sparse checkout (requires git to be installed)
+  - `zip` – download repository zip archive and extract specific files
+  - `auto` – intelligent fallback strategy:
+    - If git is available: tries git → zip → API
+    - If git is not available:
+      - For whole repository: tries zip → API
+      - For specific paths: tries API → zip
 - `-f, --force` – force overwrite existing files without prompting.
 - `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
 - `--api-rate` – display GitHub API rate limit information and exit.

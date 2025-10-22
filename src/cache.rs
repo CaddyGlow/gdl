@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -93,7 +93,7 @@ pub fn load_cached_response(url: &str, ttl_secs: u64) -> Result<Option<CachedRes
                 "failed to open cached response file {}: {}",
                 path.display(),
                 err
-            ))
+            ));
         }
     };
 
@@ -322,7 +322,10 @@ mod tests {
         let test_dir = setup_test_cache_dir();
 
         let cache_dir = downloads_cache_dir().expect("Failed to get cache dir");
-        assert!(cache_dir.exists(), "Downloads cache directory should be created");
+        assert!(
+            cache_dir.exists(),
+            "Downloads cache directory should be created"
+        );
         assert!(cache_dir.ends_with("gdl/downloads"));
 
         cleanup_test_cache_dir(test_dir);
@@ -334,7 +337,10 @@ mod tests {
         let test_dir = setup_test_cache_dir();
 
         let cache_dir = repos_cache_dir().expect("Failed to get cache dir");
-        assert!(cache_dir.exists(), "Repos cache directory should be created");
+        assert!(
+            cache_dir.exists(),
+            "Repos cache directory should be created"
+        );
         assert!(cache_dir.ends_with("gdl/repos"));
 
         cleanup_test_cache_dir(test_dir);

@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use console::style;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::cache::repos_cache_dir;
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
-use crate::progress::{format_bytes, DownloadProgress};
+use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{FileCopyTask, RequestInfo, RequestKind};
 
@@ -78,9 +78,21 @@ async fn download_via_zip_impl(
             style("▼").cyan()
         );
         debug!("Downloading zip archive to {}", zip_path.display());
-        download_zip_file(&client, &zip_url, &zip_path, token.as_deref(), &rate_limit, &multi).await?;
+        download_zip_file(
+            &client,
+            &zip_url,
+            &zip_path,
+            token.as_deref(),
+            &rate_limit,
+            &multi,
+        )
+        .await?;
     } else {
-        eprintln!("{} {} Using cached zip archive", style("[1/2]").bold().dim(), style("✓").green());
+        eprintln!(
+            "{} {} Using cached zip archive",
+            style("[1/2]").bold().dim(),
+            style("✓").green()
+        );
         info!("Using cached zip archive at {}", zip_path.display());
     }
 
@@ -290,11 +302,7 @@ fn extract_from_zip(
 
     let total_files = tasks.len();
 
-    let mut progress = DownloadProgress::with_multi_progress(
-        total_files,
-        total_bytes,
-        Some(multi),
-    );
+    let mut progress = DownloadProgress::with_multi_progress(total_files, total_bytes, Some(multi));
 
     let target_display = if total_files == 1 && treat_as_single_file {
         format_path_for_log(&tasks[0].target_path)

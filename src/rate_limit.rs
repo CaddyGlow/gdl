@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::StatusCode;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

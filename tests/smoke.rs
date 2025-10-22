@@ -44,9 +44,7 @@ fn prints_long_version_information() -> Result<(), Box<dyn std::error::Error>> {
 fn rejects_invalid_url() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gdl")?;
     cmd.arg("not-a-valid-url");
-    cmd.assert()
-        .failure()
-        .stderr(contains("invalid"));
+    cmd.assert().failure().stderr(contains("invalid"));
     Ok(())
 }
 
@@ -54,8 +52,7 @@ fn rejects_invalid_url() -> Result<(), Box<dyn std::error::Error>> {
 fn accepts_clear_cache_without_url() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gdl")?;
     cmd.arg("--clear-cache");
-    cmd.assert()
-        .success();
+    cmd.assert().success();
     Ok(())
 }
 

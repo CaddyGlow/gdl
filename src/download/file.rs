@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
 use log::{debug, warn};
 use reqwest::header::{ACCEPT, AUTHORIZATION, RANGE};
@@ -177,8 +177,12 @@ async fn check_partial_download(
                 if let Some(expected) = expected_size {
                     if size >= expected {
                         // File is complete or larger than expected, delete and start fresh
-                        debug!("Existing file at {} is complete or larger than expected ({} >= {}), replacing",
-                               target_path.display(), size, expected);
+                        debug!(
+                            "Existing file at {} is complete or larger than expected ({} >= {}), replacing",
+                            target_path.display(),
+                            size,
+                            expected
+                        );
                         let _ = tokio::fs::remove_file(target_path).await;
                         return Ok((0, None));
                     }

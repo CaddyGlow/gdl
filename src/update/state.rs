@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +49,7 @@ pub fn load_update_state(path: &Path) -> Result<UpdateState> {
                 "failed to open update state file {}: {}",
                 path.display(),
                 err
-            ))
+            ));
         }
     };
 

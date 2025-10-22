@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use atty::Stream;
 use log::{debug, warn};
 
@@ -15,11 +15,7 @@ pub fn check_overwrite_permission(
         .iter()
         .filter_map(|(path, _size)| {
             let path = path.as_ref();
-            if path.exists() {
-                Some(path)
-            } else {
-                None
-            }
+            if path.exists() { Some(path) } else { None }
         })
         .collect();
 
@@ -55,10 +51,16 @@ pub fn check_overwrite_permission(
 
 fn prompt_user_for_overwrite(existing_files: &[&Path]) -> Result<()> {
     // Log warning for tracking
-    warn!("{} existing file(s) will be overwritten if user confirms", existing_files.len());
+    warn!(
+        "{} existing file(s) will be overwritten if user confirms",
+        existing_files.len()
+    );
 
     // Display prompt to user (not through logger)
-    eprintln!("\n⚠  The following {} file(s) already exist:", existing_files.len());
+    eprintln!(
+        "\n⚠  The following {} file(s) already exist:",
+        existing_files.len()
+    );
     for path in existing_files.iter().take(10) {
         eprintln!("  - {}", path.display());
     }

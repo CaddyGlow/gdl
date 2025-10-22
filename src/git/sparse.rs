@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
@@ -12,7 +12,7 @@ use crate::cache::repos_cache_dir;
 use crate::git::utils::{ensure_git_available, run_git_command, run_git_with_progress};
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
-use crate::progress::{format_bytes, DownloadProgress};
+use crate::progress::{DownloadProgress, format_bytes};
 use crate::types::{FileCopyTask, RequestInfo, RequestKind};
 
 pub async fn download_via_git(
@@ -105,11 +105,20 @@ fn download_via_git_blocking(
                     .expect("invalid progress bar template")
                     .progress_chars("#>-"),
             );
-            pb.set_message(format!("Fetching updates for {}/{}", request.owner, request.repo));
+            pb.set_message(format!(
+                "Fetching updates for {}/{}",
+                request.owner, request.repo
+            ));
 
             // Update the repository
             run_git_with_progress(
-                &["fetch", "--progress", "--depth=1", "origin", request.branch.as_str()],
+                &[
+                    "fetch",
+                    "--progress",
+                    "--depth=1",
+                    "origin",
+                    request.branch.as_str(),
+                ],
                 Some(&repo_dir),
                 &[7],
                 &pb,
@@ -233,11 +242,8 @@ fn download_via_git_blocking(
     let total_files = tasks.len();
     let total_bytes: u64 = tasks.iter().filter_map(|task| task.size).sum();
 
-    let mut progress = DownloadProgress::with_multi_progress(
-        total_files,
-        total_bytes,
-        Some(&multi),
-    );
+    let mut progress =
+        DownloadProgress::with_multi_progress(total_files, total_bytes, Some(&multi));
 
     let target_display = if total_files == 1 && treat_as_single_file {
         format_path_for_log(&tasks[0].target_path)

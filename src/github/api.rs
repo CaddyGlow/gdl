@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, warn};
-use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
+use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 
 use crate::github::types::GitTreeEntryType;
@@ -367,7 +367,11 @@ pub async fn display_rate_limit_info(client: &Client, token: Option<&str>) -> Re
     let reset_str = if let Ok(duration) = reset_time.duration_since(now) {
         let secs = duration.as_secs();
         if secs >= 3600 {
-            format!("in {} hour(s) {} minute(s)", secs / 3600, (secs % 3600) / 60)
+            format!(
+                "in {} hour(s) {} minute(s)",
+                secs / 3600,
+                (secs % 3600) / 60
+            )
         } else if secs >= 60 {
             format!("in {} minute(s)", secs / 60)
         } else {
@@ -448,17 +452,13 @@ mod tests {
     #[test]
     fn rejects_invalid_github_url() {
         let err = parse_github_url("https://github.com/foo").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("URL must be either"),
-            "{}",
-            err
-        );
+        assert!(err.to_string().contains("URL must be either"), "{}", err);
     }
 
     #[test]
     fn parses_blob_url() {
-        let info = parse_github_url("https://github.com/owner/repo/blob/branch/path/file.txt").unwrap();
+        let info =
+            parse_github_url("https://github.com/owner/repo/blob/branch/path/file.txt").unwrap();
         assert_eq!(info.owner, "owner");
         assert_eq!(info.repo, "repo");
         assert_eq!(info.branch, "branch");
@@ -468,7 +468,8 @@ mod tests {
 
     #[test]
     fn parses_tree_url_with_nested_path() {
-        let info = parse_github_url("https://github.com/rust-lang/rust/tree/master/src/lib").unwrap();
+        let info =
+            parse_github_url("https://github.com/rust-lang/rust/tree/master/src/lib").unwrap();
         assert_eq!(info.owner, "rust-lang");
         assert_eq!(info.repo, "rust");
         assert_eq!(info.branch, "master");

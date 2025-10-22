@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use crate::github::types::{ContentType, GitHubContent};
 use crate::types::RequestInfo;
@@ -216,9 +216,10 @@ mod tests {
         let base = Path::new("dir");
         let item = make_file("dir/../evil.txt");
         let err = relative_path(base, &item).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("refusing to write outside the output directory"));
+        assert!(
+            err.to_string()
+                .contains("refusing to write outside the output directory")
+        );
     }
 
     #[test]
@@ -255,7 +256,8 @@ mod tests {
             has_trailing_slash: false,
             kind: RequestKind::Blob,
         };
-        let (base, output) = compute_base_and_default_output(&request, true, Some("path/to/file.txt"));
+        let (base, output) =
+            compute_base_and_default_output(&request, true, Some("path/to/file.txt"));
         assert_eq!(base, PathBuf::from("path/to"));
         assert_eq!(output, PathBuf::from("."));
     }
@@ -353,7 +355,11 @@ mod tests {
     fn test_describe_download_target_directory() {
         let output_dir = Path::new("output");
         let base_path = Path::new("dir");
-        let contents = vec![make_dir("dir"), make_file("dir/file1.txt"), make_file("dir/file2.txt")];
+        let contents = vec![
+            make_dir("dir"),
+            make_file("dir/file1.txt"),
+            make_file("dir/file2.txt"),
+        ];
         let result = describe_download_target(output_dir, base_path, &contents).unwrap();
         assert_eq!(result, "./output");
     }
