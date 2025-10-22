@@ -1,6 +1,6 @@
 # gdl
 
-CLI for downloading files or directories from a GitHub repository using the GitHub REST API—paste a GitHub URL and grab what you need without cloning the whole project.
+A fast way to download files or directories from GitHub repositories—paste a GitHub URL and grab what you need without cloning the whole project. Perfect for quickly fetching examples, demos, config files, or specific folders.
 
 ## Features
 - Optimized for copy/paste workflows: drop in a `tree` or `blob` URL while browsing GitHub and fetch the content instantly.
@@ -63,11 +63,17 @@ gdl https://github.com/owner/repo/tree/main/path/to/dir
 ```
 
 Optional flags:
-- `--output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
+- `-o, --output <path>` – destination directory for the downloaded files. When omitted, `gdl` infers a directory based on the request (current directory for single files or the leaf folder name for directories). When multiple URLs are supplied, each download reuses the same output directory if this flag is specified.
+- `-p, --parallel <N>` – maximum number of files to download concurrently (default: 4).
+- `-s, --strategy <STRATEGY>` – preferred download strategy: `api`, `git`, `zip`, or `auto` (default: `auto`).
+- `-f, --force` – force overwrite existing files without prompting.
+- `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
+- `--api-rate` – display GitHub API rate limit information and exit.
 - `--self-update` – replace the current `gdl` binary with the latest GitHub release and exit. Honors `--token`/`GITHUB_TOKEN`/`GH_TOKEN` for private repositories.
 - `--check-update` – report whether a newer release is available without downloading it.
-- `--token <token>` – GitHub personal access token. If not supplied, `gdl` falls back to `GITHUB_TOKEN` or `GH_TOKEN` environment variables when present.
-- `-v` / `-vv` – increase logging verbosity (debug/trace). Combine with `RUST_LOG` for fine-grained control.
+- `--clear-cache` – clear all cached data and exit.
+- `--no-cache` – disable HTTP response caching and download resume for this run.
+- `-v, -vv, -vvv` – increase logging verbosity (info/debug/trace). Combine with `RUST_LOG` for fine-grained control.
 
 ### Examples
 
@@ -92,9 +98,20 @@ Check for updates without downloading anything:
 gdl --check-update
 ```
 
+Check your GitHub API rate limit:
+```bash
+gdl --api-rate
+```
+
 Download from a private repository using a token:
 ```bash
 export GITHUB_TOKEN=ghp_your_personal_access_token
+gdl https://github.com/owner/private-repo/tree/main/config
+```
+
+**Tip:** If you have the GitHub CLI (`gh`) installed, you can automatically use your authenticated token:
+```bash
+export GITHUB_TOKEN=$(gh auth token)
 gdl https://github.com/owner/private-repo/tree/main/config
 ```
 
