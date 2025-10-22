@@ -30,7 +30,7 @@ pub struct Cli {
     #[arg(
         value_name = "URL",
         num_args = 1..,
-        required_unless_present_any = ["self_update", "check_update", "clear_cache"]
+        required_unless_present_any = ["self_update", "check_update", "clear_cache", "api_rate"]
     )]
     pub urls: Vec<String>,
 
@@ -41,6 +41,10 @@ pub struct Cli {
     /// Check for a newer gdl release and exit without installing it
     #[arg(long)]
     pub check_update: bool,
+
+    /// Display GitHub API rate limit information and exit
+    #[arg(long)]
+    pub api_rate: bool,
 
     /// Output directory to place the downloaded files (defaults depend on the request)
     #[arg(short = 'o', long)]

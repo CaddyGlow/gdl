@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 
 use crate::github::types::GitTreeEntryType;
-use crate::github::types::{GitHubContent, GitTreeResponse};
+use crate::github::types::{GitHubContent, GitTreeResponse, RepositoryInfo};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{FileMetadata, RequestInfo};
 
@@ -178,6 +178,41 @@ pub async fn build_file_inventory(
     Ok(files)
 }
 
+/// Fetch repository metadata including the default branch
+pub async fn fetch_repository_info(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+) -> Result<RepositoryInfo> {
+    let api_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let mut request_builder = client.get(&api_url);
+
+    if let Some(token) = token {
+        request_builder = request_builder.header(AUTHORIZATION, format!("token {}", token.trim()));
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .context("failed to fetch repository information")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "repository not found or inaccessible: {}/{}",
+            owner,
+            repo
+        ));
+    }
+
+    let repo_info: RepositoryInfo = response
+        .json()
+        .await
+        .context("failed to parse repository information")?;
+
+    Ok(repo_info)
+}
+
 pub fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     use crate::types::RequestKind;
 
@@ -187,11 +222,25 @@ pub fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     let segments: Vec<_> = parsed
         .path_segments()
         .ok_or_else(|| anyhow!("GitHub URL is missing path segments"))?
+        .filter(|s| !s.is_empty())
         .collect();
 
-    if segments.len() < 5 || (segments[2] != "tree" && segments[2] != "blob") {
+    // Handle simple repository URLs (e.g., https://github.com/owner/repo)
+    if segments.len() == 2 {
+        return Ok(RequestInfo {
+            owner: segments[0].to_string(),
+            repo: segments[1].to_string(),
+            branch: String::new(), // Empty branch indicates we need to fetch the default branch
+            path: String::new(),
+            has_trailing_slash,
+            kind: RequestKind::Tree,
+        });
+    }
+
+    // Handle full URLs with /tree/ or /blob/
+    if segments.len() < 4 || (segments[2] != "tree" && segments[2] != "blob") {
         return Err(anyhow!(
-            "URL must include /tree/ or /blob/ with a branch and path component"
+            "URL must be either 'https://github.com/owner/repo' or include /tree/ or /blob/ with a branch and path component"
         ));
     }
 
@@ -204,7 +253,11 @@ pub fn parse_github_url(raw_url: &str) -> Result<RequestInfo> {
     let owner = segments[0].to_string();
     let repo = segments[1].to_string();
     let branch = segments[3].to_string();
-    let raw_path = segments[4..].join("/");
+    let raw_path = if segments.len() > 4 {
+        segments[4..].join("/")
+    } else {
+        String::new()
+    };
     let path = raw_path.trim_matches('/').to_string();
 
     if path.is_empty() && kind == RequestKind::Blob {
@@ -281,6 +334,64 @@ pub async fn fetch_rate_limit_info(client: &Client, token: Option<&str>) -> Resu
     Ok(())
 }
 
+/// Display rate limit information to the user
+/// Note: This endpoint does not count against your primary rate limit
+pub async fn display_rate_limit_info(client: &Client, token: Option<&str>) -> Result<()> {
+    let mut request = client.get("https://api.github.com/rate_limit");
+
+    if let Some(token) = token {
+        request = request.header(AUTHORIZATION, format!("token {}", token.trim()));
+    }
+
+    let response = request
+        .send()
+        .await
+        .context("failed to fetch rate limit information")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "rate limit check failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let rate_limit: RateLimitResponse = response
+        .json()
+        .await
+        .context("failed to parse rate limit response")?;
+
+    let core = &rate_limit.resources.core;
+    let reset_time = UNIX_EPOCH + Duration::from_secs(core.reset);
+    let now = SystemTime::now();
+
+    let reset_str = if let Ok(duration) = reset_time.duration_since(now) {
+        let secs = duration.as_secs();
+        if secs >= 3600 {
+            format!("in {} hour(s) {} minute(s)", secs / 3600, (secs % 3600) / 60)
+        } else if secs >= 60 {
+            format!("in {} minute(s)", secs / 60)
+        } else {
+            format!("in {} second(s)", secs)
+        }
+    } else {
+        "now".to_string()
+    };
+
+    let auth_status = if token.is_some() {
+        "authenticated"
+    } else {
+        "unauthenticated"
+    };
+
+    println!("GitHub API Rate Limit ({}):", auth_status);
+    println!("  Limit:     {}", core.limit);
+    println!("  Used:      {}", core.used);
+    println!("  Remaining: {}", core.remaining);
+    println!("  Resets:    {}", reset_str);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,11 +422,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_simple_repository_url() {
+        let info = parse_github_url("https://github.com/CaddyGlow/copier").unwrap();
+
+        assert_eq!(info.owner, "CaddyGlow");
+        assert_eq!(info.repo, "copier");
+        assert_eq!(info.branch, ""); // Empty branch indicates default branch should be fetched
+        assert_eq!(info.path, "");
+        assert!(!info.has_trailing_slash);
+        assert_eq!(info.kind, RequestKind::Tree);
+    }
+
+    #[test]
+    fn parses_simple_repository_url_with_trailing_slash() {
+        let info = parse_github_url("https://github.com/rust-lang/rust/").unwrap();
+
+        assert_eq!(info.owner, "rust-lang");
+        assert_eq!(info.repo, "rust");
+        assert_eq!(info.branch, ""); // Empty branch indicates default branch should be fetched
+        assert_eq!(info.path, "");
+        assert!(info.has_trailing_slash);
+        assert_eq!(info.kind, RequestKind::Tree);
+    }
+
+    #[test]
     fn rejects_invalid_github_url() {
-        let err = parse_github_url("https://github.com/foo/bar").unwrap_err();
+        let err = parse_github_url("https://github.com/foo").unwrap_err();
         assert!(
             err.to_string()
-                .contains("URL must include /tree/ or /blob/"),
+                .contains("URL must be either"),
             "{}",
             err
         );

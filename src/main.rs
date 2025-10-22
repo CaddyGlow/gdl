@@ -24,7 +24,7 @@ mod zip;
 use cache::clear_all_caches;
 use cli::Cli;
 use download::download_github_path;
-use github::fetch_rate_limit_info;
+use github::{display_rate_limit_info, fetch_rate_limit_info};
 use rate_limit::RateLimitTracker;
 use update::{auto_check_for_updates, check_for_update, run_self_update};
 use utils::init_logging;
@@ -38,6 +38,7 @@ fn main() -> Result<()> {
         urls,
         self_update,
         check_update,
+        api_rate,
         output,
         token,
         verbose: _,
@@ -64,6 +65,19 @@ fn main() -> Result<()> {
 
     if check_update {
         check_for_update(token.as_deref())?;
+        return Ok(());
+    }
+
+    if api_rate {
+        let client = Client::builder()
+            .user_agent("gdl-rs (https://github.com/CaddyGlow/gdl)")
+            .build()
+            .context("failed to construct HTTP client")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to build async runtime")?;
+        runtime.block_on(display_rate_limit_info(&client, token.as_deref()))?;
         return Ok(());
     }
 

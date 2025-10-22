@@ -46,3 +46,8 @@ pub enum ContentType {
     #[serde(other)]
     Other,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RepositoryInfo {
+    pub default_branch: String,
+}
