@@ -71,27 +71,65 @@ pub async fn download_github_path(
             .await
         }
         DownloadStrategy::Auto => {
-            match download_via_rest(
-                client,
-                &request,
-                url,
-                output,
-                token,
-                parallel,
-                Arc::clone(&rate_limit),
-                no_cache,
-                force,
-                multi,
-            )
-            .await
-            {
-                Ok(()) => Ok(()),
-                Err(api_err) => {
-                    // Try zip strategy first
-                    warn!(
-                        "REST download failed ({}); attempting zip archive download...",
-                        api_err
-                    );
+            // Prefer git if available, otherwise choose based on request type
+            if git_available() {
+                // Git available: try git first, then zip, then API
+                match download_via_git(&request, url, output, token, force, multi).await {
+                    Ok(()) => Ok(()),
+                    Err(git_err) => {
+                        warn!(
+                            "Git sparse checkout failed ({}); attempting zip archive download...",
+                            git_err
+                        );
+                        match download_via_zip(
+                            client,
+                            &request,
+                            url,
+                            output,
+                            token,
+                            Arc::clone(&rate_limit),
+                            no_cache,
+                            force,
+                            multi,
+                        )
+                        .await
+                        {
+                            Ok(()) => Ok(()),
+                            Err(zip_err) => {
+                                warn!(
+                                    "Zip download failed ({}); attempting REST API download...",
+                                    zip_err
+                                );
+                                match download_via_rest(
+                                    client,
+                                    &request,
+                                    url,
+                                    output,
+                                    token,
+                                    parallel,
+                                    Arc::clone(&rate_limit),
+                                    no_cache,
+                                    force,
+                                    multi,
+                                )
+                                .await
+                                {
+                                    Ok(()) => Ok(()),
+                                    Err(api_err) => Err(git_err.context(format!(
+                                        "zip fallback failed: {}; REST API fallback also failed: {}",
+                                        zip_err, api_err
+                                    ))),
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Git not available: use zip for whole repo, API for specific paths
+                let is_whole_repo = request.path.is_empty() || request.path == "/";
+
+                if is_whole_repo {
+                    // Whole repo: try zip first, then API
                     match download_via_zip(
                         client,
                         &request,
@@ -107,22 +145,68 @@ pub async fn download_github_path(
                     {
                         Ok(()) => Ok(()),
                         Err(zip_err) => {
-                            // Finally try git sparse checkout if available
-                            if git_available() {
-                                warn!(
-                                    "Zip download failed ({}); attempting git sparse checkout...",
-                                    zip_err
-                                );
-                                match download_via_git(&request, url, output, token, force, multi).await {
-                                    Ok(()) => Ok(()),
-                                    Err(git_err) => Err(api_err.context(format!(
-                                        "zip fallback failed: {}; git fallback also failed: {}",
-                                        zip_err, git_err
-                                    ))),
-                                }
-                            } else {
-                                Err(api_err
-                                    .context(format!("zip fallback also failed: {}", zip_err)))
+                            warn!(
+                                "Zip download failed ({}); attempting REST API download...",
+                                zip_err
+                            );
+                            match download_via_rest(
+                                client,
+                                &request,
+                                url,
+                                output,
+                                token,
+                                parallel,
+                                Arc::clone(&rate_limit),
+                                no_cache,
+                                force,
+                                multi,
+                            )
+                            .await
+                            {
+                                Ok(()) => Ok(()),
+                                Err(api_err) => Err(zip_err
+                                    .context(format!("REST API fallback also failed: {}", api_err))),
+                            }
+                        }
+                    }
+                } else {
+                    // Specific path: try API first, then zip
+                    match download_via_rest(
+                        client,
+                        &request,
+                        url,
+                        output,
+                        token,
+                        parallel,
+                        Arc::clone(&rate_limit),
+                        no_cache,
+                        force,
+                        multi,
+                    )
+                    .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(api_err) => {
+                            warn!(
+                                "REST API download failed ({}); attempting zip archive download...",
+                                api_err
+                            );
+                            match download_via_zip(
+                                client,
+                                &request,
+                                url,
+                                output,
+                                token,
+                                Arc::clone(&rate_limit),
+                                no_cache,
+                                force,
+                                multi,
+                            )
+                            .await
+                            {
+                                Ok(()) => Ok(()),
+                                Err(zip_err) => Err(api_err
+                                    .context(format!("zip fallback also failed: {}", zip_err))),
                             }
                         }
                     }
