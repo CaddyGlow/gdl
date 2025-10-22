@@ -84,7 +84,7 @@ impl RateLimitTracker {
             if remaining <= threshold {
                 let should_warn = state
                     .last_warned_remaining
-                    .map_or(true, |previous| remaining < previous);
+                    .is_none_or(|previous| remaining < previous);
                 if should_warn {
                     state.last_warned_remaining = Some(remaining);
                     true

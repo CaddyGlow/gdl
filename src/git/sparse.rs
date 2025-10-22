@@ -13,20 +13,20 @@ use crate::git::utils::{ensure_git_available, run_git_command, run_git_with_prog
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
 use crate::progress::{DownloadProgress, format_bytes};
-use crate::types::{FileCopyTask, RequestInfo, RequestKind};
+use crate::types::{DownloadOptions, FileCopyTask, RequestInfo, RequestKind};
 
 pub async fn download_via_git(
     request: &RequestInfo,
     url: &str,
     output: Option<&PathBuf>,
-    token: Option<&str>,
-    force: bool,
+    options: &DownloadOptions<'_>,
     multi: &MultiProgress,
 ) -> Result<()> {
     let request = request.clone();
     let url = url.to_string();
     let output = output.cloned();
-    let token = token.map(|t| t.to_string());
+    let token = options.token.map(|t| t.to_string());
+    let force = options.force;
     let multi = multi.clone();
 
     spawn_blocking(move || download_via_git_blocking(request, url, output, token, force, multi))

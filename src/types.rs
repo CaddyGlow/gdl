@@ -21,6 +21,24 @@ pub struct FileMetadata {
     pub size: Option<u64>,
 }
 
+/// Common options for download operations
+#[derive(Debug, Clone)]
+pub struct DownloadOptions<'a> {
+    pub token: Option<&'a str>,
+    pub no_cache: bool,
+    pub force: bool,
+}
+
+impl<'a> DownloadOptions<'a> {
+    pub fn new(token: Option<&'a str>, no_cache: bool, force: bool) -> Self {
+        Self {
+            token,
+            no_cache,
+            force,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DownloadTask {
     pub item: crate::github::types::GitHubContent,

@@ -19,19 +19,17 @@ use crate::overwrite::{check_overwrite_permission, collect_target_paths};
 use crate::paths::{describe_download_target, determine_paths, ensure_directory};
 use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
-use crate::types::{DownloadTask, RequestInfo};
+use crate::types::{DownloadOptions, DownloadTask, RequestInfo};
 use crate::zip::download_via_zip;
 
 pub async fn download_github_path(
     client: &Client,
     url: &str,
     output: Option<&PathBuf>,
-    token: Option<&str>,
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
     strategy: DownloadStrategy,
-    no_cache: bool,
-    force: bool,
+    options: &DownloadOptions<'_>,
     multi: &MultiProgress,
 ) -> Result<()> {
     let mut request = parse_github_url(url)?;
@@ -44,7 +42,7 @@ pub async fn download_github_path(
             request.owner,
             request.repo
         );
-        let repo_info = fetch_repository_info(client, &request.owner, &request.repo, token)
+        let repo_info = fetch_repository_info(client, &request.owner, &request.repo, options.token)
             .await
             .context("failed to fetch repository information")?;
         request.branch = repo_info.default_branch;
@@ -59,18 +57,16 @@ pub async fn download_github_path(
                 &request,
                 url,
                 output,
-                token,
                 parallel,
                 Arc::clone(&rate_limit),
-                no_cache,
-                force,
+                options,
                 multi,
             )
             .await
         }
         DownloadStrategy::Git => {
             ensure_git_available()?;
-            download_via_git(&request, url, output, token, force, multi).await
+            download_via_git(&request, url, output, options, multi).await
         }
         DownloadStrategy::Zip => {
             download_via_zip(
@@ -78,10 +74,8 @@ pub async fn download_github_path(
                 &request,
                 url,
                 output,
-                token,
                 Arc::clone(&rate_limit),
-                no_cache,
-                force,
+                options,
                 multi,
             )
             .await
@@ -90,7 +84,7 @@ pub async fn download_github_path(
             // Prefer git if available, otherwise choose based on request type
             if git_available() {
                 // Git available: try git first, then zip, then API
-                match download_via_git(&request, url, output, token, force, multi).await {
+                match download_via_git(&request, url, output, options, multi).await {
                     Ok(()) => Ok(()),
                     Err(git_err) => {
                         warn!(
@@ -102,10 +96,8 @@ pub async fn download_github_path(
                             &request,
                             url,
                             output,
-                            token,
                             Arc::clone(&rate_limit),
-                            no_cache,
-                            force,
+                            options,
                             multi,
                         )
                         .await
@@ -121,11 +113,9 @@ pub async fn download_github_path(
                                     &request,
                                     url,
                                     output,
-                                    token,
                                     parallel,
                                     Arc::clone(&rate_limit),
-                                    no_cache,
-                                    force,
+                                    options,
                                     multi,
                                 )
                                 .await
@@ -151,10 +141,8 @@ pub async fn download_github_path(
                         &request,
                         url,
                         output,
-                        token,
                         Arc::clone(&rate_limit),
-                        no_cache,
-                        force,
+                        options,
                         multi,
                     )
                     .await
@@ -170,11 +158,9 @@ pub async fn download_github_path(
                                 &request,
                                 url,
                                 output,
-                                token,
                                 parallel,
                                 Arc::clone(&rate_limit),
-                                no_cache,
-                                force,
+                                options,
                                 multi,
                             )
                             .await
@@ -194,11 +180,9 @@ pub async fn download_github_path(
                         &request,
                         url,
                         output,
-                        token,
                         parallel,
                         Arc::clone(&rate_limit),
-                        no_cache,
-                        force,
+                        options,
                         multi,
                     )
                     .await
@@ -214,10 +198,8 @@ pub async fn download_github_path(
                                 &request,
                                 url,
                                 output,
-                                token,
                                 Arc::clone(&rate_limit),
-                                no_cache,
-                                force,
+                                options,
                                 multi,
                             )
                             .await
@@ -248,20 +230,18 @@ async fn download_via_rest(
     request: &RequestInfo,
     url: &str,
     output: Option<&PathBuf>,
-    token: Option<&str>,
     parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
-    no_cache: bool,
-    force: bool,
+    options: &DownloadOptions<'_>,
     multi: &MultiProgress,
 ) -> Result<()> {
     let contents = fetch_github_contents(
         client,
-        &request,
+        request,
         &request.path,
-        token,
+        options.token,
         Arc::clone(&rate_limit),
-        no_cache,
+        options.no_cache,
     )
     .await
     .with_context(|| format!("unable to fetch GitHub contents for {}", url))?;
@@ -270,17 +250,17 @@ async fn download_via_rest(
         return Err(anyhow!("No contents returned for the requested path"));
     }
 
-    let (base_path, default_output_dir) = determine_paths(&request, &contents);
+    let (base_path, default_output_dir) = determine_paths(request, &contents);
     let output_dir = output.cloned().unwrap_or(default_output_dir);
 
     let target_display = describe_download_target(&output_dir, &base_path, &contents)?;
     let file_inventory = build_file_inventory(
         client,
-        &request,
-        token,
+        request,
+        options.token,
         &contents,
         Arc::clone(&rate_limit),
-        no_cache,
+        options.no_cache,
     )
     .await
     .with_context(|| {
@@ -315,21 +295,20 @@ async fn download_via_rest(
     let total_bytes = file_inventory.values().filter_map(|meta| meta.size).sum();
     let download_tasks = collect_download_tasks(
         client,
-        &request,
-        token,
+        request,
         &output_dir,
         &base_path,
         contents,
         &file_inventory,
         parallel,
         Arc::clone(&rate_limit),
-        no_cache,
+        options,
     )
     .await?;
 
     // Check for file overwrites before proceeding
     let target_paths = collect_target_paths(&download_tasks);
-    check_overwrite_permission(&target_paths, force)?;
+    check_overwrite_permission(&target_paths, options.force)?;
 
     let progress = Arc::new(Mutex::new(DownloadProgress::with_multi_progress(
         total_files,
@@ -345,12 +324,12 @@ async fn download_via_rest(
 
     download_all_files(
         client,
-        token,
+        options.token,
         download_tasks,
         Arc::clone(&progress),
         parallel,
         Arc::clone(&rate_limit),
-        no_cache,
+        options.no_cache,
     )
     .await?;
 

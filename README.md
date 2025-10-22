@@ -1,4 +1,4 @@
-# gdl
+# gdl (GitHub Downloader)
 
 A fast way to download files or directories from GitHub repositories—paste a GitHub URL and grab what you need without cloning the whole project. Perfect for quickly fetching examples, demos, config files, or specific folders.
 

@@ -26,6 +26,7 @@ use cli::Cli;
 use download::download_github_path;
 use github::{display_rate_limit_info, fetch_rate_limit_info};
 use rate_limit::RateLimitTracker;
+use types::DownloadOptions;
 use update::{auto_check_for_updates, check_for_update, run_self_update};
 use utils::init_logging;
 
@@ -108,17 +109,16 @@ fn main() -> Result<()> {
         let output_ref = output.as_ref();
         let token_ref = token.as_deref();
         let rate_limit = rate_limit_for_runtime;
+        let options = DownloadOptions::new(token_ref, no_cache, force);
         for url in urls {
             download_github_path(
                 &client,
                 &url,
                 output_ref,
-                token_ref,
                 parallel,
                 Arc::clone(&rate_limit),
                 strategy,
-                no_cache,
-                force,
+                &options,
                 &multi_progress,
             )
             .await?;

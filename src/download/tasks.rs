@@ -11,31 +11,29 @@ use crate::github::fetch_github_contents;
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::relative_path;
 use crate::rate_limit::RateLimitTracker;
-use crate::types::{DownloadTask, FileMetadata, RequestInfo};
+use crate::types::{DownloadOptions, DownloadTask, FileMetadata, RequestInfo};
 
 pub async fn collect_download_tasks(
     client: &Client,
     request: &RequestInfo,
-    token: Option<&str>,
     output_dir: &Path,
     base_path: &Path,
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
-    no_cache: bool,
+    options: &DownloadOptions<'_>,
 ) -> Result<Vec<DownloadTask>> {
     collect_download_tasks_inner(
         client,
         request,
-        token,
         output_dir,
         base_path,
         contents,
         files,
         listing_parallel.max(1),
         rate_limit,
-        no_cache,
+        options,
     )
     .await
 }
@@ -43,14 +41,13 @@ pub async fn collect_download_tasks(
 async fn collect_download_tasks_inner(
     client: &Client,
     request: &RequestInfo,
-    token: Option<&str>,
     output_dir: &Path,
     base_path: &Path,
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
     listing_parallel: usize,
     rate_limit: Arc<RateLimitTracker>,
-    no_cache: bool,
+    options: &DownloadOptions<'_>,
 ) -> Result<Vec<DownloadTask>> {
     let mut tasks = Vec::new();
     let mut directories = Vec::new();
@@ -93,23 +90,22 @@ async fn collect_download_tasks_inner(
                 &http_client,
                 request,
                 &dir_path,
-                token,
+                options.token,
                 Arc::clone(&rate_limit),
-                no_cache,
+                options.no_cache,
             )
             .await
             .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
             collect_download_tasks_inner(
                 &http_client,
                 request,
-                token,
                 output_dir,
                 base_path,
                 sub_contents,
                 files,
                 listing_parallel,
                 rate_limit,
-                no_cache,
+                options,
             )
             .await
         }

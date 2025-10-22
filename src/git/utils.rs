@@ -148,73 +148,71 @@ fn parse_git_progress<R: BufRead>(reader: R, progress_bar: &ProgressBar) -> Vec<
 
     let mut error_messages = Vec::new();
 
-    for line_result in reader.lines() {
-        if let Ok(line) = line_result {
-            let line = line.trim();
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
 
-            // Skip empty lines
-            if line.is_empty() {
-                continue;
+        // Skip empty lines
+        if line.is_empty() {
+            continue;
+        }
+
+        // Match different progress patterns
+        let is_progress = if let Some(caps) = enumerating_re.captures(line) {
+            if let Ok(count) = caps[1].parse::<u64>() {
+                progress_bar.set_message(format!("Enumerating objects: {}", count));
             }
-
-            // Match different progress patterns
-            let is_progress = if let Some(caps) = enumerating_re.captures(line) {
-                if let Ok(count) = caps[1].parse::<u64>() {
-                    progress_bar.set_message(format!("Enumerating objects: {}", count));
-                }
-                true
-            } else if let Some(caps) = counting_re.captures(line) {
-                if let (Ok(pct), Ok(current), Ok(total)) = (
-                    caps[1].parse::<u64>(),
-                    caps[2].parse::<u64>(),
-                    caps[3].parse::<u64>(),
-                ) {
-                    progress_bar.set_message(format!("Counting objects: {}%", pct));
-                    progress_bar.set_length(total);
-                    progress_bar.set_position(current);
-                }
-                true
-            } else if let Some(caps) = compressing_re.captures(line) {
-                if let (Ok(pct), Ok(current), Ok(total)) = (
-                    caps[1].parse::<u64>(),
-                    caps[2].parse::<u64>(),
-                    caps[3].parse::<u64>(),
-                ) {
-                    progress_bar.set_message(format!("Compressing objects: {}%", pct));
-                    progress_bar.set_length(total);
-                    progress_bar.set_position(current);
-                }
-                true
-            } else if let Some(caps) = receiving_re.captures(line) {
-                if let (Ok(pct), Ok(current), Ok(total)) = (
-                    caps[1].parse::<u64>(),
-                    caps[2].parse::<u64>(),
-                    caps[3].parse::<u64>(),
-                ) {
-                    progress_bar.set_message(format!("Receiving objects: {}%", pct));
-                    progress_bar.set_length(total);
-                    progress_bar.set_position(current);
-                }
-                true
-            } else if let Some(caps) = resolving_re.captures(line) {
-                if let (Ok(pct), Ok(current), Ok(total)) = (
-                    caps[1].parse::<u64>(),
-                    caps[2].parse::<u64>(),
-                    caps[3].parse::<u64>(),
-                ) {
-                    progress_bar.set_message(format!("Resolving deltas: {}%", pct));
-                    progress_bar.set_length(total);
-                    progress_bar.set_position(current);
-                }
-                true
-            } else {
-                false
-            };
-
-            // If this line wasn't a progress message, it might be an error
-            if !is_progress {
-                error_messages.push(line.to_string());
+            true
+        } else if let Some(caps) = counting_re.captures(line) {
+            if let (Ok(pct), Ok(current), Ok(total)) = (
+                caps[1].parse::<u64>(),
+                caps[2].parse::<u64>(),
+                caps[3].parse::<u64>(),
+            ) {
+                progress_bar.set_message(format!("Counting objects: {}%", pct));
+                progress_bar.set_length(total);
+                progress_bar.set_position(current);
             }
+            true
+        } else if let Some(caps) = compressing_re.captures(line) {
+            if let (Ok(pct), Ok(current), Ok(total)) = (
+                caps[1].parse::<u64>(),
+                caps[2].parse::<u64>(),
+                caps[3].parse::<u64>(),
+            ) {
+                progress_bar.set_message(format!("Compressing objects: {}%", pct));
+                progress_bar.set_length(total);
+                progress_bar.set_position(current);
+            }
+            true
+        } else if let Some(caps) = receiving_re.captures(line) {
+            if let (Ok(pct), Ok(current), Ok(total)) = (
+                caps[1].parse::<u64>(),
+                caps[2].parse::<u64>(),
+                caps[3].parse::<u64>(),
+            ) {
+                progress_bar.set_message(format!("Receiving objects: {}%", pct));
+                progress_bar.set_length(total);
+                progress_bar.set_position(current);
+            }
+            true
+        } else if let Some(caps) = resolving_re.captures(line) {
+            if let (Ok(pct), Ok(current), Ok(total)) = (
+                caps[1].parse::<u64>(),
+                caps[2].parse::<u64>(),
+                caps[3].parse::<u64>(),
+            ) {
+                progress_bar.set_message(format!("Resolving deltas: {}%", pct));
+                progress_bar.set_length(total);
+                progress_bar.set_position(current);
+            }
+            true
+        } else {
+            false
+        };
+
+        // If this line wasn't a progress message, it might be an error
+        if !is_progress {
+            error_messages.push(line.to_string());
         }
     }
 

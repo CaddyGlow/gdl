@@ -15,23 +15,23 @@ use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::{compute_base_and_default_output, ensure_directory, format_path_for_log};
 use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
-use crate::types::{FileCopyTask, RequestInfo, RequestKind};
+use crate::types::{DownloadOptions, FileCopyTask, RequestInfo, RequestKind};
 
 pub async fn download_via_zip(
     client: &Client,
     request: &RequestInfo,
     url: &str,
     output: Option<&PathBuf>,
-    token: Option<&str>,
     rate_limit: std::sync::Arc<RateLimitTracker>,
-    no_cache: bool,
-    force: bool,
+    options: &DownloadOptions<'_>,
     multi: &MultiProgress,
 ) -> Result<()> {
     let request = request.clone();
     let url = url.to_string();
     let output = output.cloned();
-    let token = token.map(|t| t.to_string());
+    let token = options.token.map(|t| t.to_string());
+    let no_cache = options.no_cache;
+    let force = options.force;
     let client = client.clone();
     let multi = multi.clone();
 
@@ -223,7 +223,7 @@ fn extract_from_zip(
 
     let treat_as_single_file = request.kind == RequestKind::Blob;
     let (base_path, default_output_dir) =
-        compute_base_and_default_output(&request, treat_as_single_file, None);
+        compute_base_and_default_output(request, treat_as_single_file, None);
     let output_dir = output.unwrap_or(default_output_dir);
     ensure_directory(&output_dir)?;
 
