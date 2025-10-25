@@ -1,0 +1,24 @@
+name: Update Package Managers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to update (e.g., 0.1.1)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    uses: CaddyGlow/homebrew-packages/.github/workflows/notify-package-managers.yml@main
+    with:
+      tool_name: ghdl
+      version: ${{ github.event.inputs.version }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
