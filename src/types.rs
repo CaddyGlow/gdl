@@ -39,6 +39,32 @@ impl<'a> DownloadOptions<'a> {
     }
 }
 
+/// Infrastructure context for download operations
+/// Holds shared resources like HTTP client, rate limiter, and progress tracking
+#[derive(Clone)]
+pub struct DownloadContext {
+    pub client: reqwest::Client,
+    pub rate_limit: std::sync::Arc<crate::rate_limit::RateLimitTracker>,
+    pub multi: indicatif::MultiProgress,
+    pub parallel: usize,
+}
+
+impl DownloadContext {
+    pub fn new(
+        client: reqwest::Client,
+        rate_limit: std::sync::Arc<crate::rate_limit::RateLimitTracker>,
+        multi: indicatif::MultiProgress,
+        parallel: usize,
+    ) -> Self {
+        Self {
+            client,
+            rate_limit,
+            multi,
+            parallel,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DownloadTask {
     pub item: crate::github::types::GitHubContent,

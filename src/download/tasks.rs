@@ -5,48 +5,34 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use log::{debug, warn};
-use reqwest::Client;
 
 use crate::github::fetch_github_contents;
 use crate::github::types::{ContentType, GitHubContent};
 use crate::paths::relative_path;
-use crate::rate_limit::RateLimitTracker;
-use crate::types::{DownloadOptions, DownloadTask, FileMetadata, RequestInfo};
+use crate::types::{DownloadContext, DownloadOptions, DownloadTask, FileMetadata, RequestInfo};
 
 pub async fn collect_download_tasks(
-    client: &Client,
+    ctx: &DownloadContext,
     request: &RequestInfo,
     output_dir: &Path,
     base_path: &Path,
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
-    listing_parallel: usize,
-    rate_limit: Arc<RateLimitTracker>,
     options: &DownloadOptions<'_>,
 ) -> Result<Vec<DownloadTask>> {
     collect_download_tasks_inner(
-        client,
-        request,
-        output_dir,
-        base_path,
-        contents,
-        files,
-        listing_parallel.max(1),
-        rate_limit,
-        options,
+        ctx, request, output_dir, base_path, contents, files, options,
     )
     .await
 }
 
 async fn collect_download_tasks_inner(
-    client: &Client,
+    ctx: &DownloadContext,
     request: &RequestInfo,
     output_dir: &Path,
     base_path: &Path,
     contents: Vec<GitHubContent>,
     files: &HashMap<String, FileMetadata>,
-    listing_parallel: usize,
-    rate_limit: Arc<RateLimitTracker>,
     options: &DownloadOptions<'_>,
 ) -> Result<Vec<DownloadTask>> {
     let mut tasks = Vec::new();
@@ -80,10 +66,12 @@ async fn collect_download_tasks_inner(
         return Ok(tasks);
     }
 
+    let listing_parallel = ctx.parallel.max(1);
+
     let sub_results = stream::iter(directories.into_iter().map(|dir_entry| {
-        let http_client = client.clone();
+        let http_client = ctx.client.clone();
         let dir_path = dir_entry.path.clone();
-        let rate_limit = Arc::clone(&rate_limit);
+        let rate_limit = Arc::clone(&ctx.rate_limit);
         async move {
             debug!("Enumerating directory {}", dir_path);
             let sub_contents = fetch_github_contents(
@@ -96,15 +84,22 @@ async fn collect_download_tasks_inner(
             )
             .await
             .with_context(|| format!("unable to fetch contents of {}", dir_path))?;
+
+            // Create a temporary context for recursive calls
+            let sub_ctx = DownloadContext {
+                client: http_client,
+                rate_limit,
+                multi: ctx.multi.clone(),
+                parallel: ctx.parallel,
+            };
+
             collect_download_tasks_inner(
-                &http_client,
+                &sub_ctx,
                 request,
                 output_dir,
                 base_path,
                 sub_contents,
                 files,
-                listing_parallel,
-                rate_limit,
                 options,
             )
             .await

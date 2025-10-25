@@ -26,7 +26,7 @@ use cli::Cli;
 use download::download_github_path;
 use github::{display_rate_limit_info, fetch_rate_limit_info};
 use rate_limit::RateLimitTracker;
-use types::DownloadOptions;
+use types::{DownloadContext, DownloadOptions};
 use update::{auto_check_for_updates, check_for_update, run_self_update};
 use utils::init_logging;
 
@@ -110,24 +110,20 @@ fn main() -> Result<()> {
         let token_ref = token.as_deref();
         let rate_limit = rate_limit_for_runtime;
         let options = DownloadOptions::new(token_ref, no_cache, force);
+        let ctx = DownloadContext::new(
+            client.clone(),
+            Arc::clone(&rate_limit),
+            multi_progress.clone(),
+            parallel,
+        );
         for url in urls {
-            download_github_path(
-                &client,
-                &url,
-                output_ref,
-                parallel,
-                Arc::clone(&rate_limit),
-                strategy,
-                &options,
-                &multi_progress,
-            )
-            .await?;
+            download_github_path(&ctx, &url, output_ref, strategy, &options).await?;
         }
 
         // Fetch and display rate limit info in verbose mode
         // Note: This endpoint does not count against your primary rate limit
         if verbose >= 1 {
-            let _ = fetch_rate_limit_info(&client, token_ref).await;
+            let _ = fetch_rate_limit_info(&ctx.client, token_ref).await;
         }
 
         Ok::<(), anyhow::Error>(())

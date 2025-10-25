@@ -1,0 +1,7 @@
+[hooks]
+pre-commit = "cargo fmt -- --check && cargo clippy --all-features --all-targets -- -D warnings && cargo test --all-features"
+# pre-push = "cargo fmt -- --check"
+# post-commit = "echo yay"
+
+[logging]
+verbose = true

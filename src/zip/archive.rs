@@ -17,31 +17,8 @@ use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
 use crate::types::{DownloadOptions, FileCopyTask, RequestInfo, RequestKind};
 
-pub async fn download_via_zip(
-    client: &Client,
-    request: &RequestInfo,
-    url: &str,
-    output: Option<&PathBuf>,
-    rate_limit: std::sync::Arc<RateLimitTracker>,
-    options: &DownloadOptions<'_>,
-    multi: &MultiProgress,
-) -> Result<()> {
-    let request = request.clone();
-    let url = url.to_string();
-    let output = output.cloned();
-    let token = options.token.map(|t| t.to_string());
-    let no_cache = options.no_cache;
-    let force = options.force;
-    let client = client.clone();
-    let multi = multi.clone();
-
-    download_via_zip_impl(
-        client, request, url, output, token, rate_limit, no_cache, force, multi,
-    )
-    .await
-}
-
-async fn download_via_zip_impl(
+/// Parameters for zip download implementation (owned values for async execution)
+struct ZipDownloadParams {
     client: Client,
     request: RequestInfo,
     url: String,
@@ -51,7 +28,45 @@ async fn download_via_zip_impl(
     no_cache: bool,
     force: bool,
     multi: MultiProgress,
+}
+
+pub async fn download_via_zip(
+    client: &Client,
+    request: &RequestInfo,
+    url: &str,
+    output: Option<&PathBuf>,
+    rate_limit: std::sync::Arc<RateLimitTracker>,
+    options: &DownloadOptions<'_>,
+    multi: &MultiProgress,
 ) -> Result<()> {
+    let params = ZipDownloadParams {
+        client: client.clone(),
+        request: request.clone(),
+        url: url.to_string(),
+        output: output.cloned(),
+        token: options.token.map(|t| t.to_string()),
+        rate_limit,
+        no_cache: options.no_cache,
+        force: options.force,
+        multi: multi.clone(),
+    };
+
+    download_via_zip_impl(params).await
+}
+
+async fn download_via_zip_impl(params: ZipDownloadParams) -> Result<()> {
+    let ZipDownloadParams {
+        client,
+        request,
+        url,
+        output,
+        token,
+        rate_limit,
+        no_cache,
+        force,
+        multi,
+    } = params;
+
     // Construct the zip download URL
     let zip_url = format!(
         "https://github.com/{}/{}/archive/refs/heads/{}.zip",

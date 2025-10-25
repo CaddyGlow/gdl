@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use futures::stream::{self, StreamExt, TryStreamExt};
-use indicatif::MultiProgress;
 use log::{info, warn};
 use reqwest::Client;
 use tokio::sync::Mutex;
@@ -19,18 +18,15 @@ use crate::overwrite::{check_overwrite_permission, collect_target_paths};
 use crate::paths::{describe_download_target, determine_paths, ensure_directory};
 use crate::progress::{DownloadProgress, format_bytes};
 use crate::rate_limit::RateLimitTracker;
-use crate::types::{DownloadOptions, DownloadTask, RequestInfo};
+use crate::types::{DownloadContext, DownloadOptions, DownloadTask, RequestInfo};
 use crate::zip::download_via_zip;
 
 pub async fn download_github_path(
-    client: &Client,
+    ctx: &DownloadContext,
     url: &str,
     output: Option<&PathBuf>,
-    parallel: usize,
-    rate_limit: Arc<RateLimitTracker>,
     strategy: DownloadStrategy,
     options: &DownloadOptions<'_>,
-    multi: &MultiProgress,
 ) -> Result<()> {
     let mut request = parse_github_url(url)?;
     log::debug!("Parsed request info: {:?}", request);
@@ -42,41 +38,30 @@ pub async fn download_github_path(
             request.owner,
             request.repo
         );
-        let repo_info = fetch_repository_info(client, &request.owner, &request.repo, options.token)
-            .await
-            .context("failed to fetch repository information")?;
+        let repo_info =
+            fetch_repository_info(&ctx.client, &request.owner, &request.repo, options.token)
+                .await
+                .context("failed to fetch repository information")?;
         request.branch = repo_info.default_branch;
         log::debug!("Using default branch: {}", request.branch);
     }
 
     let start_time = Instant::now();
     let result = match strategy {
-        DownloadStrategy::Api => {
-            download_via_rest(
-                client,
-                &request,
-                url,
-                output,
-                parallel,
-                Arc::clone(&rate_limit),
-                options,
-                multi,
-            )
-            .await
-        }
+        DownloadStrategy::Api => download_via_rest(ctx, &request, url, output, options).await,
         DownloadStrategy::Git => {
             ensure_git_available()?;
-            download_via_git(&request, url, output, options, multi).await
+            download_via_git(&request, url, output, options, &ctx.multi).await
         }
         DownloadStrategy::Zip => {
             download_via_zip(
-                client,
+                &ctx.client,
                 &request,
                 url,
                 output,
-                Arc::clone(&rate_limit),
+                Arc::clone(&ctx.rate_limit),
                 options,
-                multi,
+                &ctx.multi,
             )
             .await
         }
@@ -84,7 +69,7 @@ pub async fn download_github_path(
             // Prefer git if available, otherwise choose based on request type
             if git_available() {
                 // Git available: try git first, then zip, then API
-                match download_via_git(&request, url, output, options, multi).await {
+                match download_via_git(&request, url, output, options, &ctx.multi).await {
                     Ok(()) => Ok(()),
                     Err(git_err) => {
                         warn!(
@@ -92,13 +77,13 @@ pub async fn download_github_path(
                             git_err
                         );
                         match download_via_zip(
-                            client,
+                            &ctx.client,
                             &request,
                             url,
                             output,
-                            Arc::clone(&rate_limit),
+                            Arc::clone(&ctx.rate_limit),
                             options,
-                            multi,
+                            &ctx.multi,
                         )
                         .await
                         {
@@ -109,14 +94,11 @@ pub async fn download_github_path(
                                     zip_err
                                 );
                                 match download_via_rest(
-                                    client,
+                                    ctx,
                                     &request,
                                     url,
                                     output,
-                                    parallel,
-                                    Arc::clone(&rate_limit),
                                     options,
-                                    multi,
                                 )
                                 .await
                                 {
@@ -137,13 +119,13 @@ pub async fn download_github_path(
                 if is_whole_repo {
                     // Whole repo: try zip first, then API
                     match download_via_zip(
-                        client,
+                        &ctx.client,
                         &request,
                         url,
                         output,
-                        Arc::clone(&rate_limit),
+                        Arc::clone(&ctx.rate_limit),
                         options,
-                        multi,
+                        &ctx.multi,
                     )
                     .await
                     {
@@ -153,18 +135,7 @@ pub async fn download_github_path(
                                 "Zip download failed ({}); attempting REST API download...",
                                 zip_err
                             );
-                            match download_via_rest(
-                                client,
-                                &request,
-                                url,
-                                output,
-                                parallel,
-                                Arc::clone(&rate_limit),
-                                options,
-                                multi,
-                            )
-                            .await
-                            {
+                            match download_via_rest(ctx, &request, url, output, options).await {
                                 Ok(()) => Ok(()),
                                 Err(api_err) => Err(zip_err.context(format!(
                                     "REST API fallback also failed: {}",
@@ -175,18 +146,7 @@ pub async fn download_github_path(
                     }
                 } else {
                     // Specific path: try API first, then zip
-                    match download_via_rest(
-                        client,
-                        &request,
-                        url,
-                        output,
-                        parallel,
-                        Arc::clone(&rate_limit),
-                        options,
-                        multi,
-                    )
-                    .await
-                    {
+                    match download_via_rest(ctx, &request, url, output, options).await {
                         Ok(()) => Ok(()),
                         Err(api_err) => {
                             warn!(
@@ -194,13 +154,13 @@ pub async fn download_github_path(
                                 api_err
                             );
                             match download_via_zip(
-                                client,
+                                &ctx.client,
                                 &request,
                                 url,
                                 output,
-                                Arc::clone(&rate_limit),
+                                Arc::clone(&ctx.rate_limit),
                                 options,
-                                multi,
+                                &ctx.multi,
                             )
                             .await
                             {
@@ -226,21 +186,18 @@ pub async fn download_github_path(
 }
 
 async fn download_via_rest(
-    client: &Client,
+    ctx: &DownloadContext,
     request: &RequestInfo,
     url: &str,
     output: Option<&PathBuf>,
-    parallel: usize,
-    rate_limit: Arc<RateLimitTracker>,
     options: &DownloadOptions<'_>,
-    multi: &MultiProgress,
 ) -> Result<()> {
     let contents = fetch_github_contents(
-        client,
+        &ctx.client,
         request,
         &request.path,
         options.token,
-        Arc::clone(&rate_limit),
+        Arc::clone(&ctx.rate_limit),
         options.no_cache,
     )
     .await
@@ -255,11 +212,11 @@ async fn download_via_rest(
 
     let target_display = describe_download_target(&output_dir, &base_path, &contents)?;
     let file_inventory = build_file_inventory(
-        client,
+        &ctx.client,
         request,
         options.token,
         &contents,
-        Arc::clone(&rate_limit),
+        Arc::clone(&ctx.rate_limit),
         options.no_cache,
     )
     .await
@@ -294,14 +251,12 @@ async fn download_via_rest(
     let total_files = file_inventory.len();
     let total_bytes = file_inventory.values().filter_map(|meta| meta.size).sum();
     let download_tasks = collect_download_tasks(
-        client,
+        ctx,
         request,
         &output_dir,
         &base_path,
         contents,
         &file_inventory,
-        parallel,
-        Arc::clone(&rate_limit),
         options,
     )
     .await?;
@@ -313,7 +268,7 @@ async fn download_via_rest(
     let progress = Arc::new(Mutex::new(DownloadProgress::with_multi_progress(
         total_files,
         total_bytes,
-        Some(multi),
+        Some(&ctx.multi),
     )));
 
     log::debug!(
@@ -323,12 +278,12 @@ async fn download_via_rest(
     );
 
     download_all_files(
-        client,
+        &ctx.client,
         options.token,
         download_tasks,
         Arc::clone(&progress),
-        parallel,
-        Arc::clone(&rate_limit),
+        ctx.parallel,
+        Arc::clone(&ctx.rate_limit),
         options.no_cache,
     )
     .await?;
