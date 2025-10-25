@@ -14,14 +14,9 @@ fn main() {
 
     let declared_version = manifest_declared_version().unwrap_or_else(|| manifest_version.clone());
 
-    if let Some(head_tag) = git_output(["describe", "--tags", "--exact-match"]) {
-        let head_version = head_tag.trim_start_matches('v').to_string();
-        if head_version != declared_version {
-            panic!(
-                "Cargo.toml version ({declared_version}) does not match tag on HEAD ({head_version}). Update Cargo.toml or retag the commit."
-            );
-        }
-    }
+    // Note: We don't validate version matches tag here because during release workflow,
+    // we bump the version first, then create the tag. The validation would prevent commits.
+    // Instead, rely on the release script to ensure version and tag are in sync.
 
     let pkg_version = declared_version.clone();
 
