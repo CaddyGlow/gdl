@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to build (leave empty for main branch)'
+        required: false
+        type: string
+        default: ''
       targets:
         description: 'JSON array of targets to build (leave empty for all default targets)'
         required: false
@@ -27,5 +32,6 @@ jobs:
     with:
       binaries: '["ghdl"]'
       assets: '["README.md"]'
+      ref: ${{ inputs.ref || '' }}
       targets: ${{ inputs.targets || '' }}
       force_release: ${{ inputs.force_release || false }}
