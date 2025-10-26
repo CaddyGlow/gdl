@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Downloading artifacts from run ${{ inputs.run_id }}..."
-          gh run download ${{ inputs.run_id }} --dir artifacts
+          gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --dir artifacts
 
           echo "Downloaded artifacts:"
           ls -R artifacts/
