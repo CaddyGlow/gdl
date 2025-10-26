@@ -6,6 +6,17 @@ on:
     tags: [ "v*" ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: 'JSON array of targets to build (leave empty for all default targets)'
+        required: false
+        type: string
+        default: ''
+      force_release:
+        description: 'Force a release even without a tag'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -16,3 +27,5 @@ jobs:
     with:
       binaries: '["ghdl"]'
       assets: '["README.md"]'
+      targets: ${{ inputs.targets || '' }}
+      force_release: ${{ inputs.force_release || false }}
