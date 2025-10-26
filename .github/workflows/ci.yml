@@ -60,7 +60,7 @@ jobs:
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      startsWith(github.ref, 'refs/tags/')
+      (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.ref, 'v')))
     uses: CaddyGlow/homebrew-packages/.github/workflows/rust-release.yml@main
     with:
       ref: ${{ inputs.ref || '' }}
